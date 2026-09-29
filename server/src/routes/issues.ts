@@ -2289,6 +2289,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
   requestAddsExplicitBlockers?: boolean;
+  requestClearsBlockers?: boolean;
 }) {
   // A request that wires a non-empty blockedByIssueIds list is declaring that
   // the issue is waiting on other work. The implicit reopen exists for plain
@@ -2314,16 +2315,19 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
   if (
-    !isClosedIssueStatus(input.issueStatus) &&
-    input.issueStatus !== "blocked"
-  )
-    return false;
-  if (
     typeof input.assigneeAgentId !== "string" ||
     input.assigneeAgentId.length === 0
   )
     return false;
-  return true;
+  // Closed (done/cancelled): keep conversational implicit reopen.
+  if (isClosedIssueStatus(input.issueStatus)) return true;
+  // Blocked: plain board/API comments must NOT auto-reopen+wake (TYR-668 /
+  // multi-issue Recovery fan-out). Require explicit resume, OR a structured
+  // same-request blocker clear that is itself a resume signal.
+  if (input.issueStatus === "blocked") {
+    return input.requestClearsBlockers === true;
+  }
+  return false;
 }
 
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
@@ -12964,6 +12968,9 @@ export function issueRoutes(
               requestAddsExplicitBlockers:
                 Array.isArray(req.body.blockedByIssueIds) &&
                 req.body.blockedByIssueIds.length > 0,
+              requestClearsBlockers:
+                Array.isArray(req.body.blockedByIssueIds) &&
+                req.body.blockedByIssueIds.length === 0,
             })) ||
           shouldResumeInProgressScheduledRetry);
       const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -17339,6 +17346,7 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,
+            requestClearsBlockers: false,
           }) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =

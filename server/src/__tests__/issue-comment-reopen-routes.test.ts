@@ -1089,7 +1089,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("moves assigned blocked issues back to todo via POST comments", async () => {
+  it("does not implicitly reopen assigned blocked issues via plain POST comments (TYR-668 fan-out)", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(
       async (_id: string, patch: Record<string, unknown>) => ({
@@ -1101,6 +1101,43 @@ describe.sequential("issue comment reopen routes", () => {
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please continue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            wakeCommentId: "comment-1",
+            wakeReason: "issue_commented",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("reopens assigned blocked issues via POST only with explicit resume", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please continue", resume: true });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -1589,6 +1626,46 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("multi-issue board comment pattern does not fan-out reopen blocked Recovery (TYR-668)", async () => {
+    // Same pattern as the 2026-09-28 P3 reconcile: N board comments on N
+    // assigned blocked issues without resume must not each fire
+    // issue.comment.reopen (14-run fan-out).
+    const issueIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ];
+    const reopenWakeCalls: string[] = [];
+    mockHeartbeatService.wakeup.mockImplementation(async (agentId, opts) => {
+      if (opts?.reason === "issue_reopened_via_comment") {
+        reopenWakeCalls.push(String(opts?.payload?.issueId ?? opts?.contextSnapshot?.issueId ?? agentId));
+      }
+    });
+
+    for (const issueId of issueIds) {
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("blocked"),
+        id: issueId,
+      });
+      mockIssueService.addComment.mockResolvedValue({
+        id: `comment-${issueId.slice(0, 8)}`,
+        issueId,
+        companyId: "company-1",
+        body: "## Jarvis CoS — P3 reconcile\nRecovery resolved",
+      });
+      const res = await request(await installActor(createApp()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "## Jarvis CoS — P3 reconcile\nRecovery resolved" });
+      expect(res.status).toBe(201);
+      expect(mockIssueService.update).not.toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ status: "todo" }),
+      );
+    }
+
+    expect(reopenWakeCalls).toEqual([]);
+  });
+
   it("does not move dependency-blocked issues to todo via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
@@ -1838,7 +1915,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
+  it("does not implicitly reopen assigned blocked issues via plain PATCH comments (TYR-668 fan-out)", async () => {
     const issue = makeIssue("blocked");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(
@@ -1849,6 +1926,37 @@ describe.sequential("issue comment reopen routes", () => {
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "please continue" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("reopens assigned blocked issues via PATCH comment only with explicit resume", async () => {
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue", resume: true });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
