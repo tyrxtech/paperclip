@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import {
   WORKFORCE_OVERVIEW_LIMITS,
+  defaultWorkforceInitiative,
   projectWorkforceOverview,
   type WorkforceActivityInput,
   type WorkforceAgentInput,
@@ -29,6 +30,7 @@ import {
   type WorkforceWorkProductInput,
 } from "@paperclipai/shared/workforce-overview";
 import { notFound } from "../errors.js";
+import { executionIssueCondition } from "./issue-visibility.js";
 
 const LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const RUN_LOOKBACK_MS = 48 * 60 * 60 * 1000;
@@ -116,7 +118,7 @@ export function workforceOverviewService(db: Db) {
             monitorNextCheckAt: issues.monitorNextCheckAt,
           })
           .from(issues)
-          .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), ne(issues.status, "cancelled")))
+          .where(and(eq(issues.companyId, companyId), executionIssueCondition(), ne(issues.status, "cancelled")))
           .orderBy(sql`case when ${issues.status} = 'done' then 1 else 0 end`, desc(issues.updatedAt))
           .limit(WORKFORCE_OVERVIEW_LIMITS.issues),
         db
@@ -323,9 +325,7 @@ export function workforceOverviewService(db: Db) {
           updatedAt: iso(project.updatedAt) ?? now.toISOString(),
         })),
         issues: issueInputs,
-        blockerEdges: relationRows.filter(
-          (edge) => loadedIssueIds.has(edge.blockerIssueId) && loadedIssueIds.has(edge.blockedIssueId),
-        ),
+        blockerEdges: relationRows.filter((edge) => loadedIssueIds.has(edge.blockedIssueId)),
         approvals: approvalRows.map((approval): WorkforceApprovalInput => {
           const title = readApprovalTitle(approval.payload);
           return {
@@ -522,10 +522,7 @@ function toActivity(row: {
 }
 
 function resolveLoadedInitiative(query: string | null, issues: WorkforceIssueInput[]): WorkforceIssueInput | null {
-  if (!query) {
-    const parentIds = new Set(issues.map((issue) => issue.parentId).filter((id): id is string => Boolean(id)));
-    return issues.find((issue) => parentIds.has(issue.id)) ?? null;
-  }
+  if (!query) return defaultWorkforceInitiative(issues);
   return issues.find((issue) => issue.id === query || issue.identifier === query) ?? null;
 }
 

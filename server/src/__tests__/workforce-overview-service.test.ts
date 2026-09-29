@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   approvals,
   authUsers,
@@ -9,9 +10,11 @@ import {
   companyMemberships,
   createDb,
   heartbeatRuns,
+  issueRelations,
   issues,
   projects,
 } from "@paperclipai/db";
+import { WORKFORCE_OVERVIEW_LIMITS } from "@paperclipai/shared/workforce-overview";
 import { workforceOverviewService } from "../services/workforce-overview.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -50,6 +53,8 @@ describeEmbeddedPostgres("workforce overview service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
     await db.delete(issues);
@@ -186,5 +191,178 @@ describeEmbeddedPostgres("workforce overview service", () => {
     expect(overview.projects[0]?.stage).toBe("In progress");
     expect(overview.projects[0]).not.toHaveProperty("percent");
     expect(overview.projects[0]).not.toHaveProperty("progress");
+  });
+
+  it("loads extra activity for the most recently updated initiative, including a completed one", async () => {
+    const companyId = randomUUID();
+    const openParentId = randomUUID();
+    const openChildId = randomUUID();
+    const doneParentId = randomUUID();
+    const doneChildId = randomUUID();
+    const now = new Date();
+    const older = new Date(now.getTime() - 86_400_000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TYR",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: openParentId,
+        companyId,
+        title: "Open epic",
+        identifier: `TYR-${openParentId.slice(0, 4)}`,
+        status: "in_progress",
+        updatedAt: older,
+      },
+      {
+        id: openChildId,
+        companyId,
+        title: "Open child",
+        identifier: `TYR-${openChildId.slice(0, 4)}`,
+        status: "todo",
+        parentId: openParentId,
+        updatedAt: older,
+      },
+      {
+        id: doneParentId,
+        companyId,
+        title: "Finished epic",
+        identifier: `TYR-${doneParentId.slice(0, 4)}`,
+        status: "done",
+        updatedAt: now,
+        completedAt: now,
+      },
+      {
+        id: doneChildId,
+        companyId,
+        title: "Finished child",
+        identifier: `TYR-${doneChildId.slice(0, 4)}`,
+        status: "done",
+        parentId: doneParentId,
+        updatedAt: now,
+        completedAt: now,
+      },
+    ]);
+    await db.insert(activityLog).values([
+      ...Array.from({ length: WORKFORCE_OVERVIEW_LIMITS.activity }, (_, index) => ({
+        companyId,
+        actorType: "system" as const,
+        actorId: "system",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: randomUUID(),
+        details: { summary: `noise ${index}` },
+        createdAt: now,
+      })),
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: doneChildId,
+        details: { summary: "finished epic handoff" },
+        createdAt: older,
+      },
+    ]);
+
+    const overview = await workforceOverviewService(db).get(companyId, null);
+
+    expect(overview.selectedInitiativeId).toBe(doneParentId);
+    expect(overview.timeline.some((entry) => entry.summary === "finished epic handoff")).toBe(true);
+  });
+
+  it("omits non-execution issues from work counts and keeps cancelled blockers unresolved", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const readyId = randomUUID();
+    const harnessId = randomUUID();
+    const conversationId = randomUUID();
+    const blockedId = randomUUID();
+    const cancelledId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TYR",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ready",
+      role: "engineer",
+      status: "idle",
+      adapterType: "cursor",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: readyId,
+        companyId,
+        title: "Ready work",
+        identifier: `TYR-${readyId.slice(0, 4)}`,
+        status: "todo",
+        assigneeAgentId: agentId,
+        updatedAt: now,
+      },
+      {
+        id: harnessId,
+        companyId,
+        title: "Harness ticket",
+        identifier: `TYR-${harnessId.slice(0, 4)}`,
+        status: "todo",
+        assigneeAgentId: agentId,
+        harnessKind: "skill_test",
+        updatedAt: now,
+      },
+      {
+        id: conversationId,
+        companyId,
+        title: "Conversation",
+        identifier: `TYR-${conversationId.slice(0, 4)}`,
+        status: "in_review",
+        assigneeAgentId: agentId,
+        conversationAgentId: agentId,
+        conversationUserId: "board-user",
+        conversationState: "active",
+        updatedAt: now,
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Still blocked",
+        identifier: `TYR-${blockedId.slice(0, 4)}`,
+        status: "todo",
+        assigneeAgentId: agentId,
+        updatedAt: now,
+      },
+      {
+        id: cancelledId,
+        companyId,
+        title: "Abandoned blocker",
+        identifier: `TYR-${cancelledId.slice(0, 4)}`,
+        status: "cancelled",
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: cancelledId,
+      relatedIssueId: blockedId,
+      type: "blocks",
+    });
+
+    const overview = await workforceOverviewService(db).get(companyId, null);
+
+    expect(overview.counts.waitingEligible.value).toBe(1);
+    expect(overview.counts.pendingReviews.value).toBe(0);
+    expect(overview.counts.blocked.value).toBe(0);
   });
 });
