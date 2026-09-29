@@ -402,11 +402,16 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
   const nowMs = Date.parse(snapshot.now);
 
   const blockersByIssue = new Map<string, WorkforceIssueInput[]>();
+  const unresolvedBlockedIssueIds = new Set<string>();
   for (const edge of snapshot.blockerEdges) {
     const blocker = issuesById.get(edge.blockerIssueId);
     const blocked = issuesById.get(edge.blockedIssueId);
-    if (!blocker || !blocked) continue;
-    if (blocker.status === "done" || blocker.status === "cancelled") continue;
+    if (!blocked) continue;
+    // Only a done blocker releases the dependent. A cancelled blocker, or one
+    // missing from the snapshot, stays unresolved.
+    if (blocker?.status === "done") continue;
+    unresolvedBlockedIssueIds.add(blocked.id);
+    if (!blocker) continue;
     const list = blockersByIssue.get(blocked.id) ?? [];
     list.push(blocker);
     blockersByIssue.set(blocked.id, list);
@@ -448,7 +453,7 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
   const pausedAgents = agentCards.filter((agent) => agent.disposition === "paused");
 
   const waitingEligible = snapshot.issues.filter((issue) =>
-    isWaitingEligible(issue, agentsById, blockersByIssue, liveRunByIssue, runsById),
+    isWaitingEligible(issue, agentsById, unresolvedBlockedIssueIds, liveRunByIssue, runsById),
   );
   const blockedIssues = snapshot.issues.filter((issue) => issue.status === "blocked");
   const pendingReviews = snapshot.issues.filter((issue) => issue.status === "in_review");
@@ -477,7 +482,7 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
   const securityItems = [...blockerItems, ...decisions].filter((item) => item.security);
 
   const initiatives = selectInitiatives(snapshot.issues);
-  const selected = resolveInitiative(snapshot.initiativeQuery, snapshot.issues, initiatives);
+  const selected = resolveInitiative(snapshot.initiativeQuery, snapshot.issues);
   const timeline = selected.issue
     ? buildTimeline(selected.issue, snapshot.issues, snapshot.activity, agentsById, membersById)
     : [];
@@ -618,12 +623,12 @@ function isRecentlyAccepted(issue: WorkforceIssueInput, nowMs: number): boolean 
 function isWaitingEligible(
   issue: WorkforceIssueInput,
   agentsById: Map<string, WorkforceAgentInput>,
-  blockersByIssue: Map<string, WorkforceIssueInput[]>,
+  unresolvedBlockedIssueIds: Set<string>,
   liveRunByIssue: Map<string, WorkforceRunInput>,
   runsById: Map<string, WorkforceRunInput>,
 ): boolean {
   if (issue.status !== "todo") return false;
-  if ((blockersByIssue.get(issue.id) ?? []).length > 0) return false;
+  if (unresolvedBlockedIssueIds.has(issue.id)) return false;
   if (liveRunByIssue.has(issue.id)) return false;
   const checkout = issue.checkoutRunId ? runsById.get(issue.checkoutRunId) : undefined;
   if (checkout && LIVE_RUN_STATUSES.has(checkout.status)) return false;
@@ -991,23 +996,30 @@ function issueOwnedByMarc(issue: WorkforceIssueInput, marcIds: Set<string>): boo
   );
 }
 
-function selectInitiatives(issues: WorkforceIssueInput[]): WorkforceInitiativeOption[] {
+function initiativeParents(issues: WorkforceIssueInput[]): WorkforceIssueInput[] {
   const parentIds = new Set(issues.map((issue) => issue.parentId).filter((id): id is string => Boolean(id)));
   return issues
     .filter((issue) => parentIds.has(issue.id))
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+function selectInitiatives(issues: WorkforceIssueInput[]): WorkforceInitiativeOption[] {
+  return initiativeParents(issues)
     .slice(0, WORKFORCE_OVERVIEW_LIMITS.initiatives)
     .map((issue) => ({ id: issue.id, identifier: issue.identifier, title: issue.title }));
+}
+
+/** Most recently updated parent with child tasks. Done parents stay eligible. */
+export function defaultWorkforceInitiative(issues: WorkforceIssueInput[]): WorkforceIssueInput | null {
+  return initiativeParents(issues)[0] ?? null;
 }
 
 function resolveInitiative(
   query: string | null,
   issues: WorkforceIssueInput[],
-  initiatives: WorkforceInitiativeOption[],
 ): { issue: WorkforceIssueInput | null; note: string | null } {
   if (!query) {
-    const first = initiatives[0];
-    const issue = first ? issues.find((candidate) => candidate.id === first.id) ?? null : null;
+    const issue = defaultWorkforceInitiative(issues);
     return {
       issue,
       note: issue ? null : "No initiative with child tasks is in this snapshot. The timeline stays empty.",

@@ -3,10 +3,56 @@ import {
   projectWorkforceOverview,
   retainWorkforceSnapshot,
   workforceConnection,
+  type WorkforceAgentInput,
+  type WorkforceIssueInput,
   type WorkforceOverviewSnapshot,
 } from "./workforce-overview.js";
 
 const NOW = "2026-09-29T09:40:00.000Z";
+
+function issue(overrides: Partial<WorkforceIssueInput> & Pick<WorkforceIssueInput, "id" | "status">): WorkforceIssueInput {
+  return {
+    identifier: null,
+    title: overrides.id,
+    projectId: null,
+    parentId: null,
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    priority: "medium",
+    checkoutRunId: null,
+    executionRunId: null,
+    currentStageType: null,
+    lastDecisionOutcome: null,
+    executionParticipantUserId: null,
+    unblockAction: null,
+    unblockOwnerUserId: null,
+    unblockOwnerBoard: false,
+    completedAt: null,
+    updatedAt: NOW,
+    monitorNextCheckAt: null,
+    labelNames: [],
+    ...overrides,
+  };
+}
+
+function idleAgent(id: string): WorkforceAgentInput {
+  return {
+    id,
+    name: id,
+    role: "engineer",
+    title: null,
+    status: "idle",
+    reportsTo: null,
+    adapterType: "process",
+    model: null,
+    environmentId: null,
+    host: null,
+    pauseReason: null,
+    pausedAt: null,
+    errorReason: null,
+    lastHeartbeatAt: null,
+  };
+}
 
 function snapshot(overrides: Partial<WorkforceOverviewSnapshot> = {}): WorkforceOverviewSnapshot {
   return {
@@ -514,6 +560,58 @@ describe("projectWorkforceOverview", () => {
     const overview = projectWorkforceOverview(snapshot({ initiativeQuery: "TYR-404" }));
     expect(overview.timeline).toEqual([]);
     expect(overview.timelineNote).toMatch(/not found/);
+  });
+
+  it("defaults the timeline to the most recently updated parent, including a completed one", () => {
+    const overview = projectWorkforceOverview(
+      snapshot({
+        issues: [
+          issue({ id: "open-parent", identifier: "TYR-1", status: "in_progress", updatedAt: "2026-09-28T00:00:00.000Z" }),
+          issue({ id: "open-child", status: "todo", parentId: "open-parent", updatedAt: "2026-09-28T00:00:00.000Z" }),
+          issue({
+            id: "done-parent",
+            identifier: "TYR-2",
+            status: "done",
+            updatedAt: "2026-09-29T09:00:00.000Z",
+            completedAt: "2026-09-29T09:00:00.000Z",
+          }),
+          issue({
+            id: "done-child",
+            status: "done",
+            parentId: "done-parent",
+            updatedAt: "2026-09-29T09:00:00.000Z",
+            completedAt: "2026-09-29T09:00:00.000Z",
+          }),
+        ],
+      }),
+    );
+
+    expect(overview.selectedInitiativeId).toBe("done-parent");
+    expect(overview.initiatives[0]?.identifier).toBe("TYR-2");
+  });
+
+  it("does not count a todo as waiting eligible when a blocker is cancelled or missing", () => {
+    const ready = idleAgent("ready");
+    const overview = projectWorkforceOverview(
+      snapshot({
+        agents: [ready],
+        issues: [
+          issue({ id: "missing-block", status: "todo", assigneeAgentId: "ready" }),
+          issue({ id: "cancelled-block", status: "todo", assigneeAgentId: "ready" }),
+          issue({ id: "cancelled-blocker", identifier: "TYR-9", status: "cancelled" }),
+          issue({ id: "clear", status: "todo", assigneeAgentId: "ready" }),
+          issue({ id: "done-block", status: "todo", assigneeAgentId: "ready" }),
+          issue({ id: "done-blocker", identifier: "TYR-8", status: "done", completedAt: NOW }),
+        ],
+        blockerEdges: [
+          { blockerIssueId: "not-loaded", blockedIssueId: "missing-block" },
+          { blockerIssueId: "cancelled-blocker", blockedIssueId: "cancelled-block" },
+          { blockerIssueId: "done-blocker", blockedIssueId: "done-block" },
+        ],
+      }),
+    );
+
+    expect(overview.counts.waitingEligible.value).toBe(2);
   });
 });
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { RadioTower } from "lucide-react";
 import {
   WORKFORCE_OVERVIEW_POLL_MS,
@@ -43,7 +43,6 @@ export function WorkforceOverview() {
     queryKey: queryKeys.workforceOverview(selectedCompanyId ?? "", initiative),
     queryFn: () => workforceOverviewApi.get(selectedCompanyId!, initiative),
     enabled: !!selectedCompanyId,
-    placeholderData: keepPreviousData,
     refetchInterval: visibility.visible ? WORKFORCE_OVERVIEW_POLL_MS : false,
     refetchIntervalInBackground: false,
   });
@@ -132,6 +131,9 @@ export function WorkforceOverviewBody({
       />
     );
   }
+
+  const selectedInitiative = overview.initiatives.find((item) => item.id === overview.selectedInitiativeId);
+  const initiativeValue = initiative ?? selectedInitiative?.identifier ?? selectedInitiative?.id ?? "";
 
   const counts: WorkforceCount[] = [
     overview.counts.activeProjects,
@@ -229,7 +231,7 @@ export function WorkforceOverviewBody({
             Initiative
             <select
               className="rounded-lg border bg-card px-2 py-1.5 text-sm text-foreground"
-              value={initiative ?? overview.selectedInitiativeId ?? ""}
+              value={initiativeValue}
               onChange={(event) => onInitiativeChange(event.target.value || null)}
             >
               <option value="">Latest initiative with child tasks</option>

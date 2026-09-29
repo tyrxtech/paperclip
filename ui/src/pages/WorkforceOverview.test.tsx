@@ -162,6 +162,99 @@ describe("WorkforceOverviewBody", () => {
       root.unmount();
     });
   });
+
+  it("binds the initiative select to the public identifier of the default initiative", () => {
+    const snapshot: WorkforceOverviewSnapshot = {
+      companyId: "company-1",
+      now: NOW,
+      truncated: false,
+      initiativeQuery: null,
+      agents: [],
+      projects: [],
+      blockerEdges: [],
+      approvals: [],
+      runs: [],
+      activity: [],
+      workProducts: [],
+      members: [],
+      environments: [],
+      issues: [
+        {
+          id: "init",
+          identifier: "TYR-721",
+          title: "Live workforce",
+          status: "in_progress",
+          projectId: null,
+          parentId: null,
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          priority: "high",
+          checkoutRunId: null,
+          executionRunId: null,
+          currentStageType: null,
+          lastDecisionOutcome: null,
+          executionParticipantUserId: null,
+          unblockAction: null,
+          unblockOwnerUserId: null,
+          unblockOwnerBoard: false,
+          completedAt: null,
+          updatedAt: NOW,
+          monitorNextCheckAt: null,
+          labelNames: [],
+        },
+        {
+          id: "child",
+          identifier: "TYR-722",
+          title: "Build the page",
+          status: "todo",
+          projectId: null,
+          parentId: "init",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          priority: "medium",
+          checkoutRunId: null,
+          executionRunId: null,
+          currentStageType: null,
+          lastDecisionOutcome: null,
+          executionParticipantUserId: null,
+          unblockAction: null,
+          unblockOwnerUserId: null,
+          unblockOwnerBoard: false,
+          completedAt: null,
+          updatedAt: NOW,
+          monitorNextCheckAt: null,
+          labelNames: [],
+        },
+      ],
+    };
+    const overview = projectWorkforceOverview(snapshot);
+    expect(overview.selectedInitiativeId).toBe("init");
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(
+        <WorkforceOverviewBody
+          overview={overview}
+          loading={false}
+          connection="live"
+          lastSuccessAt={NOW}
+          fetchError={null}
+          refreshing={false}
+          initiative={null}
+          onInitiativeChange={() => {}}
+          onRefresh={() => {}}
+        />,
+      );
+    });
+
+    expect((container.querySelector("select") as HTMLSelectElement).value).toBe("TYR-721");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
 });
 
 describe("workforce overview client", () => {
@@ -172,5 +265,6 @@ describe("workforce overview client", () => {
     expect(api).not.toMatch(/api\.(post|patch|put|delete)/);
     expect(page).not.toMatch(/agentsApi|issuesApi\.(checkout|update)|heartbeatsApi\.(wakeup|invoke)/);
     expect(page).toMatch(/workforceOverviewApi\.get/);
+    expect(page).not.toMatch(/keepPreviousData/);
   });
 });
