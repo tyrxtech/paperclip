@@ -4020,6 +4020,63 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it.each(["blocked", "cancelled"] as const)(
+    "sends reopen only for closed statuses, not blocked (%s)",
+    async (issueStatus) => {
+      const root = createRoot(container);
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              issueStatus={issueStatus}
+              currentAssigneeValue="agent:agent-1"
+              onAdd={onAdd}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      const editor = container.querySelector(
+        'textarea[aria-label="Issue chat editor"]',
+      ) as HTMLTextAreaElement | null;
+      const submitButton = Array.from(container.querySelectorAll("button")).find(
+        (element) => element.textContent === "Send",
+      ) as HTMLButtonElement | undefined;
+
+      act(() => {
+        const valueSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype,
+          "value",
+        )?.set;
+        valueSetter?.call(editor, "Please pick this back up");
+        editor?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+      await act(async () => {
+        submitButton?.click();
+      });
+
+      expect(onAdd).toHaveBeenCalledWith(
+        "Please pick this back up",
+        issueStatus === "cancelled" ? true : undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
+
+      act(() => {
+        root.unmount();
+      });
+    },
+  );
+
   it("opens a warning dialog before sending a reply with no assignee selected and posts on Send anyway", async () => {
     const root = createRoot(container);
     const onAdd = vi.fn().mockResolvedValue(undefined);

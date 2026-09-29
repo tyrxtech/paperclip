@@ -550,6 +550,54 @@ describe("optimistic issue comments", () => {
     expect(next?.assigneeUserId).toBe("board-2");
   });
 
+  it("does not optimistically move a blocked issue to todo on reopen", () => {
+    const next = applyOptimisticIssueCommentUpdate(
+      {
+        id: "issue-1",
+        companyId: "company-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        goalId: null,
+        parentId: null,
+        title: "Still blocked",
+        description: null,
+        status: "blocked",
+        workMode: "standard",
+        priority: "medium",
+        reviewPolicy: null,
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        responsibleUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "board-1",
+        issueNumber: 1,
+        identifier: "PAP-1",
+        originKind: "manual",
+        originId: null,
+        originRunId: null,
+        requestDepth: 0,
+        billingCode: null,
+        assigneeAdapterOverrides: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        hiddenAt: null,
+        createdAt: new Date("2026-03-28T14:00:00.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+      },
+      { reopen: true },
+    );
+
+    expect(next?.status).toBe("blocked");
+  });
+
   it("applies optimistic field updates for issue property edits", () => {
     const next = applyOptimisticIssueFieldUpdate(
       {

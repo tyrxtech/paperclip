@@ -977,6 +977,33 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("wake up", true, undefined, undefined, expect.any(String));
   });
 
+  it.each(["blocked", "cancelled"] as const)(
+    "passes reopen only for closed statuses, not blocked (%s)",
+    async (issueStatus) => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          issueStatus={issueStatus}
+          currentAssigneeValue="agent:a1"
+        />,
+      );
+
+      typeText("wake up");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith(
+        "wake up",
+        issueStatus === "cancelled" ? true : undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
+    },
+  );
+
   it("hides the attach button without an upload handler and shows it with one", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
     expect(

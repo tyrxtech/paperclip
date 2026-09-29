@@ -1126,6 +1126,26 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("does not reopen a blocked issue via POST when the client sends reopen without resume or clear-blockers", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please continue", reopen: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("reopens assigned blocked issues via POST only with explicit resume", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(
@@ -1943,6 +1963,25 @@ describe.sequential("issue comment reopen routes", () => {
           }),
         }),
       ),
+    );
+  });
+
+  it("does not reopen a blocked issue via PATCH when the client sends reopen without resume or clear-blockers", async () => {
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue", reopen: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
     );
   });
 

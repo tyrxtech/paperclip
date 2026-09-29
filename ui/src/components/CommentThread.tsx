@@ -165,7 +165,9 @@ function parseReassignment(target: string): CommentReassignment | null {
 }
 
 function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  // Blocked stays blocked. A plain comment must not send reopen:true.
+  // Resume and clear-blockers use their own request fields.
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled";
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 

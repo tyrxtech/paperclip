@@ -2330,6 +2330,20 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return false;
 }
 
+// `reopen: true` is an explicit move for closed issues (done/cancelled).
+// On a blocked issue it is not sufficient. A comment leaves blocked only when
+// the client sends `resume: true`, or the same request clears blockers
+// (handled by shouldImplicitlyMoveCommentedIssueToTodo).
+function explicitCommentMovesIssueToTodo(input: {
+  issueStatus: string | null | undefined;
+  reopenRequested: boolean;
+  resumeRequested: boolean;
+}) {
+  if (input.resumeRequested) return true;
+  if (input.issueStatus === "blocked") return false;
+  return input.reopenRequested;
+}
+
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   hasComment: boolean;
   issueStatus: string | null | undefined;
@@ -12889,8 +12903,11 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
-      const explicitMoveToTodoRequested =
-        reopenRequested || resumeRequested === true;
+      const explicitMoveToTodoRequested = explicitCommentMovesIssueToTodo({
+        issueStatus: existing.status,
+        reopenRequested: reopenRequested === true,
+        resumeRequested: resumeRequested === true,
+      });
       const recoveryRelevantSourceMutationRequested =
         req.body.status !== undefined ||
         normalizedAssigneeAgentId !== undefined ||
@@ -17312,8 +17329,11 @@ export function issueRoutes(
       ) {
         if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
       }
-      const explicitMoveToTodoRequested =
-        effectiveReopenRequested || effectiveResumeRequested === true;
+      const explicitMoveToTodoRequested = explicitCommentMovesIssueToTodo({
+        issueStatus: issue.status,
+        reopenRequested: effectiveReopenRequested === true,
+        resumeRequested: effectiveResumeRequested === true,
+      });
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
           hasComment: true,
