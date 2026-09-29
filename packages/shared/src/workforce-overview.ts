@@ -67,12 +67,38 @@ export interface WorkforceCount {
   value: number;
   label: string;
   detail: string;
+  /** False when the snapshot issue read hit WORKFORCE_OVERVIEW_LIMITS.issues. */
+  complete: boolean;
+}
+
+export interface WorkforceTruncation {
+  issues: boolean;
+  activity: boolean;
+  runs: boolean;
+  workProducts: boolean;
+}
+
+export function describeWorkforceTruncation(
+  truncatedBy: WorkforceTruncation,
+  limits: typeof WORKFORCE_OVERVIEW_LIMITS = WORKFORCE_OVERVIEW_LIMITS,
+): string | null {
+  const hit: string[] = [];
+  if (truncatedBy.issues) hit.push(`tasks (cap ${limits.issues})`);
+  if (truncatedBy.activity) hit.push(`activity (cap ${limits.activity})`);
+  if (truncatedBy.runs) hit.push(`runs (cap ${limits.runs})`);
+  if (truncatedBy.workProducts) hit.push(`deliverables (cap ${limits.workProducts})`);
+  if (hit.length === 0) return null;
+  const issueNote = truncatedBy.issues
+    ? " Overview task counts are partial until a complete task read is available."
+    : " Overview task and agent counts remain complete; older timeline rows, run history, or deliverables may be absent.";
+  return `This snapshot hit a read limit on ${hit.join(", ")}.${issueNote}`;
 }
 
 export interface WorkforceOverviewSnapshot {
   companyId: string;
   now: string;
   truncated: boolean;
+  truncatedBy?: WorkforceTruncation;
   initiativeQuery: string | null;
   agents: WorkforceAgentInput[];
   projects: WorkforceProjectInput[];
@@ -322,6 +348,8 @@ export interface WorkforceOverview {
   readOnly: true;
   limits: typeof WORKFORCE_OVERVIEW_LIMITS;
   truncated: boolean;
+  truncatedBy: WorkforceTruncation;
+  truncationNote: string | null;
   counts: {
     activeProjects: WorkforceCount;
     executingAgents: WorkforceCount;
@@ -493,38 +521,55 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
 
   const marcNames = marcMembers.map((member) => member.name).join(", ");
 
+  const truncatedBy: WorkforceTruncation = snapshot.truncatedBy ?? {
+    issues: snapshot.truncated,
+    activity: snapshot.truncated,
+    runs: snapshot.truncated,
+    workProducts: snapshot.truncated,
+  };
+  const issuesComplete = !truncatedBy.issues;
+  const agentsComplete = true;
+  const truncationNote = describeWorkforceTruncation(truncatedBy);
+
   return {
     companyId: snapshot.companyId,
     generatedAt: snapshot.now,
     timeZone: WORKFORCE_OVERVIEW_TIME_ZONE,
     readOnly: true,
     limits: WORKFORCE_OVERVIEW_LIMITS,
-    truncated: snapshot.truncated,
+    truncated: snapshot.truncated || Object.values(truncatedBy).some(Boolean),
+    truncatedBy,
+    truncationNote,
     counts: {
       activeProjects: {
         value: activeProjects.length,
         label: "Active projects",
         detail: "Planned or in progress, and not paused or archived.",
+        complete: issuesComplete,
       },
       executingAgents: {
         value: executingAgents.length,
         label: "Executing agents",
         detail: "Status running, with no pause. A paused agent is never counted here.",
+        complete: agentsComplete,
       },
       waitingEligible: {
         value: waitingEligible.length,
         label: "Waiting eligible",
         detail: "Todo tasks whose assignee can be invoked, with no open blocker and no live run.",
+        complete: issuesComplete,
       },
       blocked: {
         value: blockedIssues.length,
         label: "Blocked",
         detail: "Tasks in blocked. Security items stay labeled in the blocker list.",
+        complete: issuesComplete,
       },
       pendingReviews: {
         value: pendingReviews.length,
         label: "Pending reviews",
         detail: "Tasks in review.",
+        complete: issuesComplete,
       },
       marcDecisions: {
         value: marcDecisionItems.length,
@@ -534,21 +579,25 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
           marcMembers.length > 0
             ? `Pending board approvals plus reviews owned by ${marcNames}.`
             : "No company member named Marc. Pending board approvals are listed separately and are not labeled as Marc decisions.",
+        complete: issuesComplete,
       },
       recentlyAccepted: {
         value: recentlyAccepted.length,
         label: "Recently accepted",
         detail: "Done tasks with a recorded completion time in the last 24 hours.",
+        complete: issuesComplete,
       },
       pausedAgents: {
         value: pausedAgents.length,
         label: "Paused",
         detail: "Paused agents stay visible here and are excluded from executing.",
+        complete: agentsComplete,
       },
       security: {
         value: securityItems.length,
         label: "Security",
         detail: "Blocked tasks and open decisions labeled security by label, assignee role, or approval title.",
+        complete: issuesComplete,
       },
     },
     projects: projectCards,
