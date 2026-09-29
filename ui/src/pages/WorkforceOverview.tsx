@@ -133,7 +133,12 @@ export function WorkforceOverviewBody({
   }
 
   const selectedInitiative = overview.initiatives.find((item) => item.id === overview.selectedInitiativeId);
-  const initiativeValue = initiative ?? selectedInitiative?.identifier ?? selectedInitiative?.id ?? "";
+  const selectedOptionValue = selectedInitiative?.identifier ?? selectedInitiative?.id ?? "";
+  // Option values are public identifiers. A URL that still holds the issue id must select that same option.
+  const initiativeValue =
+    !initiative || initiative === selectedInitiative?.id || initiative === selectedOptionValue
+      ? selectedOptionValue
+      : initiative;
 
   const counts: WorkforceCount[] = [
     overview.counts.activeProjects,
