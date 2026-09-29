@@ -7,7 +7,11 @@ The page is read-only. Loading it, polling it, and pressing Refresh call:
 
 `GET /api/companies/:companyId/workforce-overview`
 
-An optional `initiative` query (issue id or identifier such as `TYR-721`) selects the handoff timeline. None of those requests check out a task, resume an agent, reassign work, or start a run.
+An optional `initiative` query (issue id or identifier such as `TYR-721`) selects the handoff timeline. With no query, the server and the page use the same parent: the most recently updated issue that has child tasks, including a completed parent. The initiative control value is that issue's public identifier. None of those requests check out a task, resume an agent, reassign work, or start a run.
+
+Work counts use the same execution-issue filter as the dashboard. Hidden issues, harness issues, and persistent conversation containers are omitted. A dependent task is waiting eligible only when every blocker is done. A cancelled blocker, or a blocker missing from the snapshot, stays unresolved.
+
+Switching company starts a new read. The page does not keep the previous company's snapshot while that read is in flight. A failed refresh for the same company still keeps the last successful snapshot for that company.
 
 ## What it shows
 

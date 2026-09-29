@@ -252,6 +252,24 @@ describe("WorkforceOverviewBody", () => {
     expect((container.querySelector("select") as HTMLSelectElement).value).toBe("TYR-721");
 
     flushSync(() => {
+      root.render(
+        <WorkforceOverviewBody
+          overview={overview}
+          loading={false}
+          connection="live"
+          lastSuccessAt={NOW}
+          fetchError={null}
+          refreshing={false}
+          initiative="init"
+          onInitiativeChange={() => {}}
+          onRefresh={() => {}}
+        />,
+      );
+    });
+
+    expect((container.querySelector("select") as HTMLSelectElement).value).toBe("TYR-721");
+
+    flushSync(() => {
       root.unmount();
     });
   });
