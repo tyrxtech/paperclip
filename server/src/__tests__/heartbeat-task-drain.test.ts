@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  armTaskDrainOnStartFromEnv,
   getTaskDrainStatus,
   resolveHeartbeatSchedulingSuppression,
+  resolveStartupHeartbeatRecoveryPlan,
   startTaskDrain,
   stopTaskDrain,
 } from "../services/heartbeat.ts";
@@ -51,6 +53,54 @@ describe("heartbeat task drain", () => {
       reason: null,
     });
     expect(getTaskDrainStatus().draining).toBe(false);
+  });
+
+  it("does not arm a startup hold unless the env is truthy", () => {
+    expect(armTaskDrainOnStartFromEnv({})).toEqual({ armed: false });
+    expect(armTaskDrainOnStartFromEnv({ PAPERCLIP_TASK_DRAIN_ON_START: "false" })).toEqual({
+      armed: false,
+    });
+    expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
+      suppressed: false,
+      reason: null,
+    });
+    expect(resolveStartupHeartbeatRecoveryPlan({ suppressed: false, reason: null })).toEqual({
+      runBookkeeping: true,
+      runDispatch: true,
+    });
+  });
+
+  it("arms an indefinite startup hold before dispatch and keeps orphan recovery", () => {
+    expect(armTaskDrainOnStartFromEnv({ PAPERCLIP_TASK_DRAIN_ON_START: "true" })).toEqual({
+      armed: true,
+    });
+    const status = getTaskDrainStatus();
+    expect(status.draining).toBe(true);
+    expect(status.expiresAt).toBeNull();
+    expect(status.source).toBe("startup_env");
+    expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
+      suppressed: true,
+      reason: "task_drain",
+    });
+    expect(
+      resolveStartupHeartbeatRecoveryPlan({ suppressed: true, reason: "task_drain" }),
+    ).toEqual({ runBookkeeping: true, runDispatch: false });
+    expect(
+      resolveStartupHeartbeatRecoveryPlan({
+        suppressed: true,
+        reason: "database_restore_in_progress",
+      }),
+    ).toEqual({ runBookkeeping: false, runDispatch: false });
+  });
+
+  it("a second arm does not replace an active drain", () => {
+    startTaskDrain({ ttlMs: 5_000 });
+    expect(getTaskDrainStatus().source).toBe("operator");
+    expect(armTaskDrainOnStartFromEnv({ PAPERCLIP_TASK_DRAIN_ON_START: "1" })).toEqual({
+      armed: true,
+    });
+    expect(getTaskDrainStatus().source).toBe("operator");
+    expect(getTaskDrainStatus().expiresAt).not.toBeNull();
   });
 
   it("status_reports_quiescent_when_both_promise_sets_are_empty", () => {

@@ -289,6 +289,15 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  armTaskDrainOnStartFromEnv: vi.fn(() => ({ armed: false })),
+  resolveStartupHeartbeatRecoveryPlan: (suppression: {
+    suppressed: boolean;
+    reason: string | null;
+  }) => {
+    if (!suppression.suppressed) return { runBookkeeping: true, runDispatch: true };
+    if (suppression.reason === "task_drain") return { runBookkeeping: true, runDispatch: false };
+    return { runBookkeeping: false, runDispatch: false };
+  },
   githubConnectionEventService: vi.fn(() => ({
     pollOnce: vi.fn(async () => ({
       leased: 0,
@@ -622,6 +631,25 @@ describe("startServer feedback export wiring", () => {
     } finally {
       setIntervalSpy.mockRestore();
     }
+  });
+
+  it("reaps orphans during a startup task drain and does not launch queued work", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+    }));
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
+      suppressed: true,
+      reason: "task_drain",
+    });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalled();
+    expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock.recoverActiveSessionGoals).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock.recoverPendingSessionGoalActions).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock.reconcileStrandedAssignedIssues).not.toHaveBeenCalled();
   });
 
   it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {

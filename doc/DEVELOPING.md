@@ -987,6 +987,28 @@ versions across directories. With these artifacts preinstalled, startup links
 and verifies them without uploading a binary or installing packages. Deploy
 the updated sandbox image with the matching runner qualification changes.
 
+### Startup dispatch hold
+
+Set `PAPERCLIP_TASK_DRAIN_ON_START=true` (also `1`, `yes`, or `on`) on the
+server process before it starts. The process arms an indefinite in-memory
+task drain before it opens the database and before any heartbeat dequeue.
+Startup still reaps orphaned runs and leaves queued rows in place. It does
+not promote scheduled retries or call `resumeQueuedRuns` until the hold is
+released. Unset, or any other value, keeps today's startup dispatch.
+
+`GET /api/instance/task-drain` reports the hold (`draining: true`,
+`expiresAt: null`, `source: "startup_env"`). A board user who is the local
+implicit actor or an instance admin releases it with
+`DELETE /api/instance/task-drain`. That stop restores admission and runs the
+dispatch startup withheld: due retries, queued runs, session-goal recovery,
+and the stranded-work reconciles. The same DELETE is the existing operator
+drain release. A process restart clears the in-memory hold; if the env is
+still set, the next start arms it again.
+
+`PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS` and `PAPERCLIP_RESTORE_IN_PROGRESS`
+are a different switch. They skip orphan recovery as well as dispatch.
+The startup hold does not.
+
 ### Native runner restart recovery
 
 Paperclip Runner keeps its heartbeat run, native session, logical runner, and

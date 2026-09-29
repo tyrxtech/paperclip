@@ -398,6 +398,12 @@ export function instanceSettingsRoutes(db: Db) {
       // that is already correct in the database, and must not report the
       // stop as failed when it succeeded.
       publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
+      if (wasActive) {
+        // The hold is already gone. Run the dispatch startup withheld, and
+        // the queued rows the hold preserved, before this transition ends
+        // so a concurrent start cannot reopen the hold underneath them.
+        await heartbeat.resumeHeldAdmission();
+      }
       return wasActive;
     });
     res.json({ wasActive });

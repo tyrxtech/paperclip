@@ -72,6 +72,8 @@ import {
   externalObjectService,
   executionWorkspaceService,
   heartbeatService,
+  armTaskDrainOnStartFromEnv,
+  resolveStartupHeartbeatRecoveryPlan,
   issueThreadInteractionService,
   githubConnectionEventService,
   issueService,
@@ -205,6 +207,15 @@ async function startServerWithDatabaseTeardown(
 ): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
+  // Arm before the database, the heartbeat service, and every wakeup. A
+  // later listen callback must not be the first thing that can dequeue.
+  const startupTaskDrain = armTaskDrainOnStartFromEnv();
+  if (startupTaskDrain.armed) {
+    logger.warn(
+      { env: "PAPERCLIP_TASK_DRAIN_ON_START" },
+      "startup task drain armed; queued and scheduled work stays held until DELETE /api/instance/task-drain",
+    );
+  }
 
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
@@ -1429,15 +1440,26 @@ async function startServerWithDatabaseTeardown(
       "worktree run-execution cutoff state",
     );
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
+    const startupRecoveryPlan = resolveStartupHeartbeatRecoveryPlan(
+      heartbeatSchedulingSuppression,
+    );
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
-    // into a dead "running" row during startup recovery.
-    if (heartbeatSchedulingSuppression.suppressed) {
+    // into a dead "running" row during startup recovery. A startup task drain
+    // still reaps. Database restore and worktree suppression skip that
+    // bookkeeping, and neither of those launches queued work.
+    if (!startupRecoveryPlan.runBookkeeping) {
       logger.warn(
         { reason: heartbeatSchedulingSuppression.reason },
         "heartbeat scheduling suppressed for this runtime instance",
       );
     } else {
+      if (!startupRecoveryPlan.runDispatch) {
+        logger.warn(
+          { reason: heartbeatSchedulingSuppression.reason },
+          "startup dispatch held until the task drain is released; orphan recovery still runs",
+        );
+      }
       const startupHeartbeatRecovery = (async () => {
         // Legacy remote recovery releases sandbox leases. Wait for provider
         // workers before cleanup or retry admission, including unmanaged installs.
@@ -1502,6 +1524,8 @@ async function startServerWithDatabaseTeardown(
             }
           }
         }
+
+        if (!startupRecoveryPlan.runDispatch) return;
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
@@ -1754,7 +1778,20 @@ async function startServerWithDatabaseTeardown(
           }));
 
         if (heartbeatSchedulerStopped) return;
-        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+        const periodicRecoveryPlan = resolveStartupHeartbeatRecoveryPlan(
+          await heartbeat.resolveSchedulingSuppression(),
+        );
+        if (periodicRecoveryPlan.runBookkeeping && !periodicRecoveryPlan.runDispatch) {
+          // Hold launch. Keep the orphan reaper running so a drained process
+          // still finalizes dead runs and leaves their retries queued.
+          trackHeartbeatSchedulerWork(
+            heartbeat
+              .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+              .catch((err) => {
+                logger.error({ err }, "periodic heartbeat recovery failed");
+              }),
+          );
+        } else if (periodicRecoveryPlan.runDispatch) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat

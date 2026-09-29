@@ -17,6 +17,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  resumeHeldAdmission: vi.fn(async () => undefined),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -97,6 +98,8 @@ describe("instance settings routes", () => {
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
     mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.resumeHeldAdmission.mockReset();
+    mockHeartbeatService.resumeHeldAdmission.mockResolvedValue(undefined);
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
@@ -918,6 +921,8 @@ describe("instance settings routes", () => {
       mockHeartbeatService.computeTaskDrain.mockReset();
       mockHeartbeatService.applyTaskDrain.mockReset();
       mockHeartbeatService.stopTaskDrain.mockReset();
+      mockHeartbeatService.resumeHeldAdmission.mockReset();
+      mockHeartbeatService.resumeHeldAdmission.mockResolvedValue(undefined);
     });
 
     it("returns the idle status", async () => {
@@ -994,6 +999,7 @@ describe("instance settings routes", () => {
       }
       // The mutation runs only after the shared transaction commits.
       expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledWith();
+      expect(mockHeartbeatService.resumeHeldAdmission).toHaveBeenCalledTimes(1);
       expect(mockPublishActivity).toHaveBeenCalledTimes(2);
     });
 
@@ -1094,6 +1100,7 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBeGreaterThanOrEqual(500);
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.resumeHeldAdmission).not.toHaveBeenCalled();
     });
 
     it("still reports the stopped drain when publishing its committed audit record fails", async () => {

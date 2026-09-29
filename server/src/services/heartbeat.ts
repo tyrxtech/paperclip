@@ -1271,12 +1271,16 @@ const nativeSessionResumeDispatchTimers = new Map<
   ReturnType<typeof setTimeout>
 >();
 // Task drain: an operator-controlled hold on new run admission, so a caller
-// can wait for active work to finish before it stops the process. The state
-// lives in process memory only — a process restart clears it — and it sits at
-// module scope like activeRunExecutions above, so both the pure
+// can wait for active work to finish before it stops the process. The same
+// hold is what PAPERCLIP_TASK_DRAIN_ON_START arms before startup dispatch.
+// The state lives in process memory only — a process restart clears it, and
+// the env arms it again on the next start — and it sits at module scope like
+// activeRunExecutions above, so both the pure
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
+type TaskDrainSource = "operator" | "startup_env";
 let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
+let taskDrainSource: TaskDrainSource | null = null;
 
 function readTaskDrain(
   now: Date,
@@ -1287,6 +1291,7 @@ function readTaskDrain(
     taskDrainState.expiresAt.getTime() <= now.getTime()
   ) {
     taskDrainState = null;
+    taskDrainSource = null;
   }
   return taskDrainState;
 }
@@ -1304,11 +1309,15 @@ export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
 }
 
 /** Assign the given drain as the current task-drain state. */
-export function applyTaskDrain(drain: {
-  startedAt: Date;
-  expiresAt: Date | null;
-}): void {
+export function applyTaskDrain(
+  drain: {
+    startedAt: Date;
+    expiresAt: Date | null;
+  },
+  source: TaskDrainSource = "operator",
+): void {
   taskDrainState = drain;
+  taskDrainSource = source;
 }
 
 export function startTaskDrain(opts: { ttlMs?: number | null } = {}): {
@@ -1323,6 +1332,7 @@ export function startTaskDrain(opts: { ttlMs?: number | null } = {}): {
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
+  taskDrainSource = null;
   return { wasActive };
 }
 
@@ -1339,6 +1349,7 @@ export function getTaskDrainStatus(): {
   activeRuns: number;
   pendingWakes: number;
   quiescent: boolean;
+  source: TaskDrainSource | null;
 } {
   const state = readTaskDrain(new Date());
   const activeRuns = activeRunExecutionPromises.size;
@@ -1350,6 +1361,7 @@ export function getTaskDrainStatus(): {
     activeRuns,
     pendingWakes,
     quiescent: activeRuns === 0 && pendingWakes === 0,
+    source: state ? taskDrainSource : null,
   };
 }
 
@@ -9315,6 +9327,49 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+/**
+ * Arm an indefinite admission hold before heartbeat dequeue when
+ * PAPERCLIP_TASK_DRAIN_ON_START is truthy (`true`, `1`, `yes`, `on`).
+ * Unset or any other value leaves admission unchanged. A drain that is
+ * already active is left in place so a later call cannot shorten it.
+ * DELETE /api/instance/task-drain releases the current process; the env
+ * arms the hold again only on the next process start.
+ */
+export function armTaskDrainOnStartFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): { armed: boolean } {
+  if (!isTruthyRuntimeEnvValue(env.PAPERCLIP_TASK_DRAIN_ON_START)) {
+    return { armed: false };
+  }
+  if (readTaskDrain(new Date()) !== null) {
+    return { armed: true };
+  }
+  applyTaskDrain(computeTaskDrain({ ttlMs: null }), "startup_env");
+  return { armed: true };
+}
+
+/**
+ * Database restore and worktree suppression skip orphan recovery entirely.
+ * A startup task drain still runs that bookkeeping and keeps queued rows,
+ * and it withholds the paths that launch queued or scheduled work.
+ */
+export function resolveStartupHeartbeatRecoveryPlan(suppression: {
+  suppressed: boolean;
+  reason:
+    | "worktree_instance"
+    | "database_restore_in_progress"
+    | "task_drain"
+    | null;
+}): { runBookkeeping: boolean; runDispatch: boolean } {
+  if (!suppression.suppressed) {
+    return { runBookkeeping: true, runDispatch: true };
+  }
+  if (suppression.reason === "task_drain") {
+    return { runBookkeeping: true, runDispatch: false };
+  }
+  return { runBookkeeping: false, runDispatch: false };
+}
+
 export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
@@ -16238,6 +16293,9 @@ export function heartbeatService(
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
+    if ((await getSchedulingSuppression()).suppressed) {
+      return { promoted: 0, runIds: [] as string[] };
+    }
     const cutoff = await getWorktreeExecutionCutoff();
     const result = await runDispatch.promoteDueScheduledRetries({
       now,
@@ -25926,7 +25984,13 @@ export function heartbeatService(
     };
 
     const schedulingSuppression = await getSchedulingSuppression();
-    if (schedulingSuppression.suppressed) {
+    // Restore and worktree mode must not write new runs. A task drain holds
+    // launch only: the wake is persisted as a queued run, and
+    // startNextQueuedRunForAgent returns before it claims that run.
+    if (
+      schedulingSuppression.suppressed &&
+      schedulingSuppression.reason !== "task_drain"
+    ) {
       await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
         reason: schedulingSuppression.reason,
       });
@@ -29087,6 +29151,29 @@ export function heartbeatService(
     scanSilentActiveRuns,
 
     reconcileTaskWatchdogs,
+
+    // Run the startup dispatch paths that a task drain withheld. Caller must
+    // already have stopped the drain. Another active suppression (restore or
+    // worktree) still blocks every step. Queued rows are claimed once.
+    resumeHeldAdmission: async () => {
+      if ((await getSchedulingSuppression()).suppressed) return;
+      const steps: Array<[string, () => Promise<unknown>]> = [
+        ["promoteDueScheduledRetries", () => promoteDueScheduledRetries()],
+        ["resumeQueuedRuns", () => resumeQueuedRuns()],
+        ["recoverPendingSessionGoalActions", () => recoverPendingSessionGoalActions()],
+        ["recoverActiveSessionGoals", () => recoverActiveSessionGoals()],
+        ["reconcileStrandedAssignedIssues", () => reconcileStrandedAssignedIssues()],
+        ["reconcileResolvedDependencyWakes", () => reconcileResolvedDependencyWakes()],
+        ["reconcileTaskWatchdogs", () => reconcileTaskWatchdogs()],
+      ];
+      for (const [step, run] of steps) {
+        try {
+          await run();
+        } catch (err) {
+          logger.error({ err, step }, "failed to resume held admission");
+        }
+      }
+    },
 
     buildRunOutputSilence,
 
