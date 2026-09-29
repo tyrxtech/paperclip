@@ -1000,10 +1000,14 @@ released. Unset, or any other value, keeps today's startup dispatch.
 `expiresAt: null`, `source: "startup_env"`). A board user who is the local
 implicit actor or an instance admin releases it with
 `DELETE /api/instance/task-drain`. That stop restores admission and runs the
-dispatch startup withheld: due retries, queued runs, session-goal recovery,
-and the stranded-work reconciles. The same DELETE is the existing operator
-drain release. A process restart clears the in-memory hold; if the env is
-still set, the next start arms it again.
+dispatch startup withheld: native restart recovery (claim plus execute with
+the restart context), due retries, queued runs, session-goal recovery, and
+the stranded-work reconciles. Native restart claims and native session
+resumes do not run while the hold is active. A scheduled native resume timer
+that fires during the hold is kept and armed again on release if it is still
+in the future. A due attempt is claimed by native restart recovery. The same
+DELETE is the existing operator drain release. A process restart clears the
+in-memory hold; if the env is still set, the next start arms it again.
 
 `PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS` and `PAPERCLIP_RESTORE_IN_PROGRESS`
 are a different switch. They skip orphan recovery as well as dispatch.

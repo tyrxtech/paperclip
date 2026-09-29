@@ -207,7 +207,9 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  armTaskDrainOnStartFromEnv,
   heartbeatService,
+  stopTaskDrain,
   parseSandboxProviderPluginNotReadyFailureMessage,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
@@ -11997,6 +11999,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     },
   );
+
+  it("defers native restart recovery for the startup task drain and runs that claim once on release", async () => {
+    await withTempPaperclipHome(async () => {
+      await fs.mkdir(resolvePaperclipInstanceRoot(), { recursive: true });
+      const { source, child } = await seedPreparedChatRecovery("admitted");
+      const nextAttemptAt = new Date(Date.now() + 250);
+      await db
+        .update(nativeRunFinalizations)
+        .set({
+          phase: "retryable_failure",
+          nextAttemptAt,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          recoveryState: null,
+        })
+        .where(eq(nativeRunFinalizations.runId, child.runId));
+      const factory = vi.fn(() => {
+        throw new NativeRunnerOwnershipUnverifiedError();
+      });
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+      });
+      const beforeDrain = await heartbeat.recoverNativeRunsAfterRestart();
+      expect(beforeDrain.claims.map((claim) => claim.runId)).not.toContain(child.runId);
+      armTaskDrainOnStartFromEnv({ PAPERCLIP_TASK_DRAIN_ON_START: "true" });
+      try {
+        const held = await heartbeat.recoverNativeRunsAfterRestart();
+        expect(held.claims).toEqual([]);
+        expect(held).toMatchObject({ deferredForTaskDrain: true });
+        await heartbeat.reapOrphanedRuns();
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        expect(factory).not.toHaveBeenCalled();
+        const heldRun = await heartbeat.getRun(child.runId);
+        expect(heldRun?.status).toBe("running");
+        const [heldFinalization] = await db
+          .select({
+            leaseOwner: nativeRunFinalizations.leaseOwner,
+            recoveryState: nativeRunFinalizations.recoveryState,
+          })
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, child.runId));
+        expect(heldFinalization).toMatchObject({
+          leaseOwner: null,
+          recoveryState: null,
+        });
+        const [heldIssue] = await db
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, source.issueId));
+        expect(heldIssue?.executionRunId).toBe(child.runId);
+
+        stopTaskDrain();
+        await heartbeat.resumeHeldAdmission();
+        await heartbeat.drainActiveRunExecutions();
+        expect(factory).toHaveBeenCalledTimes(1);
+
+        const released = await heartbeat.getRun(child.runId);
+        const [releasedFinalization] = await db
+          .select({ leaseOwner: nativeRunFinalizations.leaseOwner })
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, child.runId));
+        expect(released?.status === "queued" && releasedFinalization?.leaseOwner).toBeFalsy();
+
+        const second = await heartbeat.recoverNativeRunsAfterRestart();
+        expect(second.claims.filter((claim) => claim.runId === child.runId)).toEqual([]);
+        expect(factory).toHaveBeenCalledTimes(1);
+      } finally {
+        stopTaskDrain();
+      }
+    });
+  }, 20_000);
 
   it.each(["admitted", "historical"] as const)(
     "does not acquire a new chat gate lock for protected native recovery: %s",

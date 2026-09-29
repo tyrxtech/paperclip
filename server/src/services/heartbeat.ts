@@ -1270,6 +1270,10 @@ const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
 >();
+// Future native resume attempts whose timer fired, or was asked to arm,
+// while a task drain held admission. Release rearms attempts that are still
+// in the future. Due attempts stay unclaimed for recoverNativeRunsAfterRestart.
+const deferredNativeResumeAt = new Map<string, Date>();
 // Task drain: an operator-controlled hold on new run admission, so a caller
 // can wait for active work to finish before it stops the process. The same
 // hold is what PAPERCLIP_TASK_DRAIN_ON_START arms before startup dispatch.
@@ -14810,6 +14814,22 @@ export function heartbeatService(
       return null;
     });
     const restartKind = intent ? ("hot" as const) : ("hard" as const);
+    // A task drain must not claim native restart authority. Claiming here
+    // commits the lease and recovery state, then executeRun rolls the
+    // heartbeat row back to queued and the lease stays taken. Release calls
+    // this function again and performs the claim once, with the restart
+    // context still attached.
+    if (readTaskDrain(now)) {
+      return {
+        restartKind,
+        claims: [],
+        dispositions: [],
+        scheduledRetryRunIds: [],
+        awaitingEvidenceRunIds: [],
+        blockedRunIds: [],
+        deferredForTaskDrain: true as const,
+      };
+    }
     const previousStartedAt = intent?.previousServerStartedAt
       ? new Date(intent.previousServerStartedAt)
       : null;
@@ -18649,7 +18669,7 @@ export function heartbeatService(
     // instances cannot open competing recoveries; executeRun receives the exact
     // claimed owner. Expired `observed` ownership never enters this set.
     const nativeResumeClaims =
-      claimableNativeRunIds.size === 0
+      claimableNativeRunIds.size === 0 || readTaskDrain(now)
         ? []
         : await dispatchNativeSessionResumptions({
             db,
@@ -19648,10 +19668,30 @@ export function heartbeatService(
     }
   }
 
+  function rearmDeferredNativeSessionResumes(now = new Date()) {
+    const pending = [...deferredNativeResumeAt.entries()];
+    deferredNativeResumeAt.clear();
+    for (const [runId, nextAttemptAt] of pending) {
+      if (nextAttemptAt.getTime() <= now.getTime()) continue;
+      scheduleNativeSessionResumeDispatch(runId, nextAttemptAt);
+    }
+  }
+
   function scheduleNativeSessionResumeDispatch(
     runId: string,
     nextAttemptAt: Date,
   ) {
+    // A firing timer must not claim a session while admission is held, and
+    // it must not drop the run. Release rearms a future attempt; a due
+    // attempt is claimed by recoverNativeRunsAfterRestart.
+    if (readTaskDrain(new Date())) {
+      const prior = nativeSessionResumeDispatchTimers.get(runId);
+      if (prior) clearTimeout(prior);
+      nativeSessionResumeDispatchTimers.delete(runId);
+      deferredNativeResumeAt.set(runId, nextAttemptAt);
+      return;
+    }
+    deferredNativeResumeAt.delete(runId);
     const prior = nativeSessionResumeDispatchTimers.get(runId);
     if (prior) clearTimeout(prior);
     const delayMs = Math.max(0, nextAttemptAt.getTime() - Date.now());
@@ -19659,6 +19699,10 @@ export function heartbeatService(
       if (nativeSessionResumeDispatchTimers.get(runId) !== timer) return;
       nativeSessionResumeDispatchTimers.delete(runId);
       void (async () => {
+        if (readTaskDrain(new Date())) {
+          deferredNativeResumeAt.set(runId, nextAttemptAt);
+          return;
+        }
         if ((await getSchedulingSuppression()).suppressed) return;
         await dispatchNativeSessionResumptions({
           db,
@@ -29157,7 +29201,9 @@ export function heartbeatService(
     // worktree) still blocks every step. Queued rows are claimed once.
     resumeHeldAdmission: async () => {
       if ((await getSchedulingSuppression()).suppressed) return;
+      rearmDeferredNativeSessionResumes();
       const steps: Array<[string, () => Promise<unknown>]> = [
+        ["recoverNativeRunsAfterRestart", () => recoverNativeRunsAfterRestart()],
         ["promoteDueScheduledRetries", () => promoteDueScheduledRetries()],
         ["resumeQueuedRuns", () => resumeQueuedRuns()],
         ["recoverPendingSessionGoalActions", () => recoverPendingSessionGoalActions()],
