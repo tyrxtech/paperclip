@@ -273,6 +273,132 @@ describe("WorkforceOverviewBody", () => {
       root.unmount();
     });
   });
+
+  it("names activity and run caps and keeps task counts complete", () => {
+    const overview = projectWorkforceOverview({
+      companyId: "company-1",
+      now: NOW,
+      truncated: true,
+      truncatedBy: { issues: false, activity: true, runs: true, workProducts: false },
+      initiativeQuery: null,
+      agents: [],
+      projects: [],
+      issues: [
+        {
+          id: "blocked",
+          identifier: "TYR-2",
+          title: "Blocked work",
+          status: "blocked",
+          projectId: null,
+          parentId: null,
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          priority: "medium",
+          checkoutRunId: null,
+          executionRunId: null,
+          currentStageType: null,
+          lastDecisionOutcome: null,
+          executionParticipantUserId: null,
+          unblockAction: null,
+          unblockOwnerUserId: null,
+          unblockOwnerBoard: false,
+          completedAt: null,
+          updatedAt: NOW,
+          monitorNextCheckAt: null,
+          labelNames: [],
+        },
+      ],
+      blockerEdges: [],
+      approvals: [],
+      runs: [],
+      activity: [],
+      workProducts: [],
+      members: [],
+      environments: [],
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(
+        <WorkforceOverviewBody
+          overview={overview}
+          loading={false}
+          connection="live"
+          lastSuccessAt={NOW}
+          fetchError={null}
+          refreshing={false}
+          initiative={null}
+          onInitiativeChange={() => {}}
+          onRefresh={() => {}}
+        />,
+      );
+    });
+
+    const note = container.querySelector('[data-testid="workforce-truncation-note"]');
+    expect(note?.textContent).toMatch(/activity \(cap 400\)/);
+    expect(note?.textContent).toMatch(/runs \(cap 300\)/);
+    expect(note?.textContent).toMatch(/remain complete/);
+    const blocked = container.querySelector('[data-testid="workforce-count-Blocked"]');
+    expect(blocked?.getAttribute("data-complete")).toBe("true");
+    expect(blocked?.textContent).not.toContain("partial");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a partial badge only on incomplete task counts", () => {
+    const overview = projectWorkforceOverview({
+      companyId: "company-1",
+      now: NOW,
+      truncated: true,
+      truncatedBy: { issues: true, activity: false, runs: false, workProducts: false },
+      initiativeQuery: null,
+      agents: [],
+      projects: [],
+      issues: [],
+      blockerEdges: [],
+      approvals: [],
+      runs: [],
+      activity: [],
+      workProducts: [],
+      members: [],
+      environments: [],
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(
+        <WorkforceOverviewBody
+          overview={overview}
+          loading={false}
+          connection="live"
+          lastSuccessAt={NOW}
+          fetchError={null}
+          refreshing={false}
+          initiative={null}
+          onInitiativeChange={() => {}}
+          onRefresh={() => {}}
+        />,
+      );
+    });
+
+    const blocked = container.querySelector('[data-testid="workforce-count-Blocked"]');
+    const executing = container.querySelector('[data-testid="workforce-count-Executing agents"]');
+    expect(blocked?.getAttribute("data-complete")).toBe("false");
+    expect(blocked?.textContent).toContain("partial");
+    expect(executing?.getAttribute("data-complete")).toBe("true");
+    expect(executing?.textContent).not.toContain("partial");
+    expect(container.querySelector('[data-testid="workforce-truncation-note"]')?.textContent).toMatch(/tasks \(cap 1000\)/);
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
 });
 
 describe("workforce overview client", () => {

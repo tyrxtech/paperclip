@@ -185,8 +185,9 @@ export function WorkforceOverviewBody({
       ) : null}
 
       {overview.truncated ? (
-        <p className="text-sm text-muted-foreground">
-          This snapshot hit a read limit. Older tasks, runs, or deliverables may be absent.
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-foreground" role="status" data-testid="workforce-truncation-note">
+          {overview.truncationNote
+            ?? "This snapshot hit a read limit. Older tasks, runs, or deliverables may be absent."}
         </p>
       ) : null}
 
@@ -194,10 +195,16 @@ export function WorkforceOverviewBody({
         <h2 className="text-lg font-semibold">Overview</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {counts.map((count) => (
-            <article key={count.label} className="rounded-lg border bg-card px-4 py-4" data-testid={`workforce-count-${count.label}`}>
-              <p className="text-2xl font-semibold tabular-nums">{count.value}</p>
+            <article key={count.label} className="rounded-lg border bg-card px-4 py-4" data-testid={`workforce-count-${count.label}`} data-complete={count.complete ? "true" : "false"}>
+              <p className="text-2xl font-semibold tabular-nums">
+                {count.value}
+                {!count.complete ? <span className="ml-2 align-middle text-xs font-medium text-amber-700 dark:text-amber-300">partial</span> : null}
+              </p>
               <p className="mt-1 text-sm font-medium text-muted-foreground">{count.label}</p>
-              <p className="mt-2 text-xs text-muted-foreground">{count.detail}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {count.detail}
+                {!count.complete ? " Partial until the task read is under the issues cap." : null}
+              </p>
             </article>
           ))}
         </div>

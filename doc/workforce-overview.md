@@ -38,7 +38,7 @@ A successful response from an empty company can show real zeros. A disconnected 
 
 ## Limits
 
-One response reads at most 1,000 tasks, 400 activity rows, 300 runs, and 200 work products. The timeline shows at most 80 activity rows for the selected initiative. When a cap is hit, the page says the snapshot is partial.
+One response reads at most 1,000 tasks, 400 activity rows, 300 runs, and 200 work products. The timeline shows at most 80 activity rows for the selected initiative. When a cap is hit, the page names that cap. Task counts and agent counts stay complete unless the task read hits 1,000. Agent disposition counts stay complete even then. A partial badge appears only on counts that used the incomplete task read.
 
 Model and host are shown only when stored on the agent (`model`, `modelName`, or `defaultModel`, plus a hostname or the agent's environment name). Missing values say **Not recorded**. Adapter config values that look like secrets are dropped.
 

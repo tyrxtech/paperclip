@@ -365,4 +365,109 @@ describeEmbeddedPostgres("workforce overview service", () => {
     expect(overview.counts.pendingReviews.value).toBe(0);
     expect(overview.counts.blocked.value).toBe(0);
   });
+
+  it("keeps task counts complete when only activity and run caps are hit", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TYR",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "running",
+      adapterType: "cursor",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Still blocked",
+      identifier: "TYR-1",
+      status: "blocked",
+      updatedAt: now,
+    });
+    await db.insert(activityLog).values(
+      Array.from({ length: WORKFORCE_OVERVIEW_LIMITS.activity }, (_, index) => ({
+        companyId,
+        actorType: "system" as const,
+        actorId: "system",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: randomUUID(),
+        details: { summary: `noise ${index}` },
+        createdAt: now,
+      })),
+    );
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: WORKFORCE_OVERVIEW_LIMITS.runs }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: now,
+      })),
+    );
+
+    const overview = await workforceOverviewService(db).get(companyId, null);
+
+    expect(overview.truncated).toBe(true);
+    expect(overview.truncatedBy).toEqual({
+      issues: false,
+      activity: true,
+      runs: true,
+      workProducts: false,
+    });
+    expect(overview.counts.blocked.value).toBe(1);
+    expect(overview.counts.blocked.complete).toBe(true);
+    expect(overview.counts.executingAgents.complete).toBe(true);
+    expect(overview.counts.pausedAgents.complete).toBe(true);
+    expect(overview.truncationNote).toMatch(/activity \(cap 400\)/);
+    expect(overview.truncationNote).toMatch(/runs \(cap 300\)/);
+    expect(overview.truncationNote).toMatch(/remain complete/);
+  });
+
+  it("marks task counts partial when the issues cap is hit", async () => {
+    const companyId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TYR",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values(
+      Array.from({ length: WORKFORCE_OVERVIEW_LIMITS.issues }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Blocked ${index}`,
+        identifier: `TYR-${index}`,
+        status: "blocked" as const,
+        updatedAt: now,
+      })),
+    );
+
+    const overview = await workforceOverviewService(db).get(companyId, null);
+
+    expect(overview.truncatedBy.issues).toBe(true);
+    expect(overview.truncatedBy.activity).toBe(false);
+    expect(overview.truncatedBy.runs).toBe(false);
+    expect(overview.counts.blocked.complete).toBe(false);
+    expect(overview.counts.executingAgents.complete).toBe(true);
+    expect(overview.counts.pausedAgents.complete).toBe(true);
+    expect(overview.truncationNote).toMatch(/tasks \(cap 1000\)/);
+    expect(overview.truncationNote).toMatch(/partial/);
+  });
 });

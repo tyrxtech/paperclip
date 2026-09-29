@@ -660,3 +660,73 @@ describe("workforce refresh state", () => {
     expect(live.connection).toBe("live");
   });
 });
+
+describe("truncation completeness", () => {
+  it("marks issue-derived counts complete when only activity/runs caps are hit", () => {
+    const overview = projectWorkforceOverview(
+      snapshot({
+        truncated: true,
+        truncatedBy: { issues: false, activity: true, runs: true, workProducts: false },
+        issues: [
+          issue({ id: "b1", status: "blocked", title: "CVE-1" }),
+          issue({ id: "b2", status: "blocked", title: "CVE-2" }),
+        ],
+      }),
+    );
+    expect(overview.truncated).toBe(true);
+    expect(overview.truncatedBy).toEqual({
+      issues: false,
+      activity: true,
+      runs: true,
+      workProducts: false,
+    });
+    expect(overview.truncationNote).toMatch(/activity \(cap 400\)/);
+    expect(overview.truncationNote).toMatch(/runs \(cap 300\)/);
+    expect(overview.truncationNote).toMatch(/Overview task and agent counts remain complete/);
+    expect(overview.counts.blocked.value).toBe(2);
+    expect(overview.counts.blocked.complete).toBe(true);
+    expect(overview.counts.executingAgents.complete).toBe(true);
+    expect(overview.counts.security.complete).toBe(true);
+  });
+
+  it("marks issue-derived counts partial when the issues cap is hit", () => {
+    const overview = projectWorkforceOverview(
+      snapshot({
+        truncated: true,
+        truncatedBy: { issues: true, activity: false, runs: false, workProducts: false },
+        issues: [issue({ id: "b1", status: "blocked" })],
+      }),
+    );
+    expect(overview.counts.blocked.complete).toBe(false);
+    expect(overview.counts.waitingEligible.complete).toBe(false);
+    expect(overview.counts.executingAgents.complete).toBe(true);
+    expect(overview.truncationNote).toMatch(/tasks \(cap 1000\)/);
+    expect(overview.truncationNote).toMatch(/Overview task counts are partial/);
+  });
+
+  it("keeps Security at 0 for CVE-titled blocked work without security labels or role", () => {
+    const overview = projectWorkforceOverview(
+      snapshot({
+        issues: [
+          issue({
+            id: "cve",
+            status: "blocked",
+            title: "CVE-2024-1234 recovery",
+            assigneeAgentId: "agent-1",
+            labelNames: [],
+          }),
+        ],
+        agents: [
+          {
+            ...idleAgent("agent-1"),
+            name: "Security",
+            role: "general",
+            title: "Security Lead — Internal AI Security",
+          },
+        ],
+      }),
+    );
+    expect(overview.counts.blocked.value).toBe(1);
+    expect(overview.counts.security.value).toBe(0);
+  });
+});

@@ -259,7 +259,13 @@ export function workforceOverviewService(db: Db) {
 
       const loadedIssueIds = new Set(issueInputs.map((issue) => issue.id));
       let activityInputs = activityRows.map(toActivity);
-      let truncated = issueRows.length >= WORKFORCE_OVERVIEW_LIMITS.issues;
+      const truncatedBy = {
+        issues: issueRows.length >= WORKFORCE_OVERVIEW_LIMITS.issues,
+        activity: activityRows.length >= WORKFORCE_OVERVIEW_LIMITS.activity,
+        runs: runRows.length >= WORKFORCE_OVERVIEW_LIMITS.runs,
+        workProducts: workProductRows.length >= WORKFORCE_OVERVIEW_LIMITS.workProducts,
+      };
+      const truncated = Object.values(truncatedBy).some(Boolean);
 
       const initiative = resolveLoadedInitiative(initiativeQuery, issueInputs);
       if (initiative) {
@@ -297,6 +303,7 @@ export function workforceOverviewService(db: Db) {
         companyId,
         now: now.toISOString(),
         truncated,
+        truncatedBy,
         initiativeQuery,
         agents: agentRows.map((agent): WorkforceAgentInput => ({
           id: agent.id,
@@ -368,11 +375,6 @@ export function workforceOverviewService(db: Db) {
         members: memberRows,
         environments: snapshotEnvironments,
       };
-
-      if (activityRows.length >= WORKFORCE_OVERVIEW_LIMITS.activity || workProductRows.length >= WORKFORCE_OVERVIEW_LIMITS.workProducts || runRows.length >= WORKFORCE_OVERVIEW_LIMITS.runs) {
-        truncated = true;
-        snapshot.truncated = true;
-      }
 
       return projectWorkforceOverview(snapshot);
     },
