@@ -207,7 +207,10 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  applyTaskDrain,
   armTaskDrainOnStartFromEnv,
+  consumeTaskDrainExpiryResume,
+  getTaskDrainStatus,
   heartbeatService,
   stopTaskDrain,
   parseSandboxProviderPluginNotReadyFailureMessage,
@@ -12067,6 +12070,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(factory).toHaveBeenCalledTimes(1);
       } finally {
         stopTaskDrain();
+      }
+    });
+  }, 20_000);
+
+  it("claims deferred native restart recovery when an operator ttl drain expires", async () => {
+    await withTempPaperclipHome(async () => {
+      await fs.mkdir(resolvePaperclipInstanceRoot(), { recursive: true });
+      const { child } = await seedPreparedChatRecovery("admitted");
+      const factory = vi.fn(() => {
+        throw new NativeRunnerOwnershipUnverifiedError();
+      });
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+      });
+      armTaskDrainOnStartFromEnv({ PAPERCLIP_TASK_DRAIN_ON_START: "true" });
+      try {
+        const held = await heartbeat.recoverNativeRunsAfterRestart();
+        expect(held.claims).toEqual([]);
+        expect(held).toMatchObject({ deferredForTaskDrain: true });
+
+        applyTaskDrain({
+          startedAt: new Date(Date.now() - 2_000),
+          expiresAt: new Date(Date.now() - 1_000),
+        });
+        expect(getTaskDrainStatus().draining).toBe(false);
+        expect(getTaskDrainStatus().source).toBeNull();
+        expect(consumeTaskDrainExpiryResume()).toBe(true);
+        expect(factory).not.toHaveBeenCalled();
+
+        await heartbeat.resumeHeldAdmission();
+        await heartbeat.drainActiveRunExecutions();
+        expect(factory).toHaveBeenCalledTimes(1);
+
+        const second = await heartbeat.recoverNativeRunsAfterRestart();
+        expect(second.claims.filter((claim) => claim.runId === child.runId)).toEqual([]);
+        expect(factory).toHaveBeenCalledTimes(1);
+      } finally {
+        stopTaskDrain();
+        consumeTaskDrainExpiryResume();
       }
     });
   }, 20_000);

@@ -73,6 +73,7 @@ import {
   executionWorkspaceService,
   heartbeatService,
   armTaskDrainOnStartFromEnv,
+  consumeTaskDrainExpiryResume,
   resolveStartupHeartbeatRecoveryPlan,
   issueThreadInteractionService,
   githubConnectionEventService,
@@ -1793,9 +1794,14 @@ async function startServerWithDatabaseTeardown(
           );
         } else if (periodicRecoveryPlan.runDispatch) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          // persisted queued work is still being driven forward. A TTL expiry
+          // clears the hold without DELETE; resume the withheld startup
+          // dispatch, including native restart claims, before this reap.
+          const resumeExpiredTaskDrain = consumeTaskDrainExpiryResume()
+            ? heartbeat.resumeHeldAdmission()
+            : Promise.resolve();
+          trackHeartbeatSchedulerWork(resumeExpiredTaskDrain
+            .then(() => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }))
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();

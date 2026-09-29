@@ -110,6 +110,7 @@ export {
   resolveHeartbeatSchedulingSuppression,
   armTaskDrainOnStartFromEnv,
   resolveStartupHeartbeatRecoveryPlan,
+  consumeTaskDrainExpiryResume,
 } from "./heartbeat.js";
 export {
   runnerGoalService,

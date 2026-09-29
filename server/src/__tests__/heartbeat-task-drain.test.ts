@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   armTaskDrainOnStartFromEnv,
+  consumeTaskDrainExpiryResume,
   getTaskDrainStatus,
   resolveHeartbeatSchedulingSuppression,
   resolveStartupHeartbeatRecoveryPlan,
@@ -11,6 +12,7 @@ import {
 describe("heartbeat task drain", () => {
   afterEach(() => {
     stopTaskDrain();
+    consumeTaskDrainExpiryResume();
     vi.useRealTimers();
   });
 
@@ -29,6 +31,7 @@ describe("heartbeat task drain", () => {
       suppressed: false,
       reason: null,
     });
+    expect(consumeTaskDrainExpiryResume()).toBe(false);
     expect(stopTaskDrain()).toEqual({ wasActive: false });
   });
 
@@ -53,6 +56,19 @@ describe("heartbeat task drain", () => {
       reason: null,
     });
     expect(getTaskDrainStatus().draining).toBe(false);
+    expect(consumeTaskDrainExpiryResume()).toBe(true);
+    expect(consumeTaskDrainExpiryResume()).toBe(false);
+  });
+
+  it("explicit stop clears a pending ttl resume", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    startTaskDrain({ ttlMs: 1000 });
+    vi.setSystemTime(new Date("2026-01-01T00:00:01.001Z"));
+    expect(getTaskDrainStatus().draining).toBe(false);
+    startTaskDrain({});
+    expect(stopTaskDrain()).toEqual({ wasActive: true });
+    expect(consumeTaskDrainExpiryResume()).toBe(false);
   });
 
   it("does not arm a startup hold unless the env is truthy", () => {

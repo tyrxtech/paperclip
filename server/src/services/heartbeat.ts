@@ -1285,6 +1285,12 @@ const deferredNativeResumeAt = new Map<string, Date>();
 type TaskDrainSource = "operator" | "startup_env";
 let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
 let taskDrainSource: TaskDrainSource | null = null;
+// A TTL drop clears the hold inside readTaskDrain and does not pass through
+// DELETE /api/instance/task-drain. The scheduler consumes this once and runs
+// resumeHeldAdmission, which is the only path that claims native restart
+// rows withheld while the hold was active. An explicit stop clears it
+// because that DELETE resumes admission itself.
+let taskDrainExpiryResumePending = false;
 
 function readTaskDrain(
   now: Date,
@@ -1296,8 +1302,16 @@ function readTaskDrain(
   ) {
     taskDrainState = null;
     taskDrainSource = null;
+    taskDrainExpiryResumePending = true;
   }
   return taskDrainState;
+}
+
+/** True once after a TTL clears the hold without an explicit stop. */
+export function consumeTaskDrainExpiryResume(): boolean {
+  if (!taskDrainExpiryResumePending) return false;
+  taskDrainExpiryResumePending = false;
+  return true;
 }
 
 /** Compute the drain a start call would apply, without changing state. */
@@ -1337,6 +1351,7 @@ export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
   taskDrainSource = null;
+  if (wasActive) taskDrainExpiryResumePending = false;
   return { wasActive };
 }
 
