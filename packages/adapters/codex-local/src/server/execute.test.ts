@@ -181,6 +181,68 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     };
   }
 
+  it("collects stopped-provider instruction edits before a throwing remote restore", async () => {
+    const order: string[] = [];
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT, assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => { order.push("restore"); throw new Error("restore failed"); },
+    }));
+    await expect(runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: async () => { order.push("collect"); } })).rejects.toThrow("restore failed");
+    expect(order).toEqual(["collect", "restore"]);
+  });
+
+  it("collects after a failed provider exit before restoring its workspace", async () => {
+    runChildProcess.mockResolvedValueOnce({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "provider failed", pid: 321, startedAt: new Date().toISOString() });
+    const collected = vi.fn(async () => {});
+    await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: collected });
+    expect(collected).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a protocol turn failure even when Codex exits zero", async () => {
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "turn.failed",
+        error: { message: "401 Missing bearer" },
+      }),
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await runTeardown({
+      sandboxAuth: "{}",
+      hostAuth: "{}",
+    });
+
+    expect(result.executionResult).toMatchObject({
+      exitCode: 0,
+      errorMessage: "401 Missing bearer",
+      errorCode: "refresh_token_invalidated",
+      errorFamily: "refresh_token_invalidated",
+    });
+  });
+
+  it("stops the bridge and restores the workspace when instruction collection rejects", async () => {
+    const order: string[] = [];
+    startAdapterExecutionTargetPaperclipBridge.mockResolvedValueOnce({
+      env: {}, stop: async () => { order.push("bridge-stop"); },
+    } as never);
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT, assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => { order.push("restore"); },
+    }));
+    await expect(runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: async () => {
+      order.push("collect");
+      throw new Error("instruction collection failed");
+    } })).rejects.toThrow("instruction collection failed");
+    expect(order).toEqual(["collect", "bridge-stop", "restore"]);
+  });
+
   it("declares a Codex `home` asset carrying both inbound provision and outbound restore contributions", async () => {
     await runTeardown({
       sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "2026-07-09T01:00:00Z", marker: "s" }),

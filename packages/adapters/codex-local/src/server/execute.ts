@@ -1457,8 +1457,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsedError ||
         stderrLine ||
         `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+      // Codex can emit a protocol-level `turn.failed` and still exit zero.
+      // The structured terminal event is authoritative; process exit alone
+      // must not turn a rejected provider turn into a successful heartbeat.
+      const attemptFailed =
+        (attempt.proc.exitCode ?? 0) !== 0 ||
+        attempt.parsed.terminalStatus === "failed";
       const transientRetryNotBefore =
-        (attempt.proc.exitCode ?? 0) !== 0
+        attemptFailed
           ? extractCodexRetryNotBefore({
               stdout: attempt.proc.stdout,
               stderr: attempt.proc.stderr,
@@ -1466,7 +1472,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             })
           : null;
       const authRefreshFailure =
-        (attempt.proc.exitCode ?? 0) !== 0
+        attemptFailed
           ? classifyCodexAuthRefreshFailure({
               stdout: attempt.proc.stdout,
               stderr: attempt.proc.stderr,
@@ -1474,7 +1480,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             })
           : null;
       const providerQuota =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
+        attemptFailed &&
         !authRefreshFailure &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
@@ -1482,7 +1488,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: fallbackErrorMessage,
         });
       const transientUpstream =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
+        attemptFailed &&
         !authRefreshFailure &&
         !providerQuota &&
         isCodexTransientUpstreamError({
@@ -1507,10 +1513,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage:
-          (attempt.proc.exitCode ?? 0) === 0
-            ? null
-            : fallbackErrorMessage,
+        errorMessage: attemptFailed ? fallbackErrorMessage : null,
         errorCode:
           // Forward the transport-level error code from the run-disposition
           // seam first. A lost duplex control channel surfaces the typed
