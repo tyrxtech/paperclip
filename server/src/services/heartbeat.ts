@@ -27314,6 +27314,7 @@ export function heartbeatService(
               {
                 companyId: agent.companyId,
                 issueId: issue.id,
+                issueStatusVersion: issue.statusVersion,
                 agentId,
                 agentNameKey,
                 issueExecutionAgentNameKey: issue.executionAgentNameKey,

@@ -35,6 +35,7 @@ import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const DEFERRED_ISSUE_STATUS_VERSION_KEY = "deferredIssueStatusVersion";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
@@ -356,8 +357,25 @@ async function promoteDeferredWake(
       finishingRunId: run.id,
       commentIds: workingCandidate.deferredCommentIds,
     });
+    const terminalAt = currentIssue.status === "done"
+      ? currentIssue.completedAt
+      : currentIssue.cancelledAt;
+    const admittedStatusVersion = Number(
+      workingCandidate.deferredContextSeed[DEFERRED_ISSUE_STATUS_VERSION_KEY],
+    );
+    const latestWakeInputAt = selfAuthorship.latestCommentCreatedAt &&
+      selfAuthorship.latestCommentCreatedAt > workingCandidate.requestedAt
+      ? selfAuthorship.latestCommentCreatedAt
+      : workingCandidate.requestedAt;
+    const predatesTerminalTransition = Boolean(
+      terminalAt && latestWakeInputAt <= terminalAt,
+    ) || (
+      Number.isSafeInteger(admittedStatusVersion) &&
+      admittedStatusVersion < currentIssue.statusVersion
+    );
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
+      !predatesTerminalTransition &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
         (currentIssue.status === "done" &&
@@ -423,6 +441,7 @@ async function promoteDeferredWake(
   delete promotedPayload["queuedCommentInterrupt"];
 
   const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
+  delete promotedContextSeed[DEFERRED_ISSUE_STATUS_VERSION_KEY];
   if (pauseHold.activePauseHold) {
     promotedContextSeed.treeHoldInteraction = true;
     promotedContextSeed.activeTreeHold = {
@@ -758,6 +777,8 @@ function statusForBlock(issue: IssueSnapshot): "todo" | "in_progress" | "in_revi
 export type AdmitWakeBehindIssueExecutionInput = {
   companyId: string;
   issueId: string;
+  /** Issue status revision observed while the wake is admitted behind the live run. */
+  issueStatusVersion: number;
   agentId: string;
   agentNameKey: string | null;
   issueExecutionAgentNameKey: string | null;
@@ -901,7 +922,10 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     if (existingDeferred) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
-        input.contextSnapshot,
+        {
+          ...input.contextSnapshot,
+          [DEFERRED_ISSUE_STATUS_VERSION_KEY]: input.issueStatusVersion,
+        },
         {
           preserveExistingInteractionContinuation: true,
         },
@@ -944,7 +968,10 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     const deferredPayload = {
       ...(input.payload ?? {}),
       issueId: input.issueId,
-      [DEFERRED_WAKE_CONTEXT_KEY]: input.contextSnapshot,
+      [DEFERRED_WAKE_CONTEXT_KEY]: {
+        ...input.contextSnapshot,
+        [DEFERRED_ISSUE_STATUS_VERSION_KEY]: input.issueStatusVersion,
+      },
     };
     await deps.writer.insertNewDeferredWake(scope, {
       companyId: input.companyId,

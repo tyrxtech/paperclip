@@ -108,6 +108,9 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     companyId: row.companyId,
     identifier: row.identifier ?? "",
     status: row.status,
+    statusVersion: row.statusVersion,
+    completedAt: row.completedAt,
+    cancelledAt: row.cancelledAt,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     hiddenAt: row.hiddenAt,
@@ -164,6 +167,7 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     deferredContextSeed,
     deferredCommentIds,
     wakeReason,
+    requestedAt: row.requestedAt,
   };
 }
 
@@ -369,10 +373,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
-        .select({ createdByRunId: issueComments.createdByRunId })
+        .select({ createdByRunId: issueComments.createdByRunId, createdAt: issueComments.createdAt })
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
-      return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+      return {
+        allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
+        latestCommentCreatedAt: rows.reduce<Date | null>(
+          (latest, row) => !latest || row.createdAt > latest ? row.createdAt : latest,
+          null,
+        ),
+      };
     },
 
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {
