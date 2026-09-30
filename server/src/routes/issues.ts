@@ -248,6 +248,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { observeJevIssueLaneShadow } from "../services/jev-decision-adapter.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
@@ -12107,6 +12108,14 @@ export function issueRoutes(
           contextSource: "issue.create",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+        });
+        // Advisory shadow only: dispatch has already been handed to Paperclip's
+        // existing wake path. This observer has no mutation or wake capability,
+        // is disabled by default, and contains every failure locally.
+        void observeJevIssueLaneShadow({
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          title: issue.title,
         });
       }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
