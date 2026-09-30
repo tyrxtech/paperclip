@@ -26564,6 +26564,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
