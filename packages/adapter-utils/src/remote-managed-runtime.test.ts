@@ -95,6 +95,43 @@ describe("remote managed runtime", () => {
     expect(restoredAuth).toBe('{"token":"remote"}\n');
   });
 
+  it("keeps node_modules out of the restore baseline for a synced SSH workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-deps-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(path.join(workspaceDir, "node_modules", "dep"), { recursive: true });
+    await mkdir(path.join(workspaceDir, "pkg", "node_modules", "dep"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "node_modules", "dep", "index.js"), "1\n", "utf8");
+    await writeFile(path.join(workspaceDir, "pkg", "node_modules", "dep", "index.js"), "2\n", "utf8");
+    await writeFile(path.join(workspaceDir, "pkg", "index.ts"), "export {};\n", "utf8");
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-synced",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+    });
+    await prepared.restoreWorkspace();
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    const [{ baselineSnapshot }] = restoreWorkspaceFromSshExecution.mock.calls[0] as unknown as [
+      { baselineSnapshot: { exclude: string[]; entries: Map<string, unknown> } },
+    ];
+    expect(baselineSnapshot.exclude).toEqual(expect.arrayContaining(["node_modules", "*/node_modules"]));
+    const baselinePaths = [...baselineSnapshot.entries.keys()];
+    expect(baselinePaths).toContain("pkg/index.ts");
+    expect(baselinePaths.some((entry) => entry.split("/").includes("node_modules"))).toBe(false);
+  });
+
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-additional-"));
     cleanupDirs.push(rootDir);
