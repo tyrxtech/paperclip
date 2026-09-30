@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES } from "./exclude-patterns.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
@@ -123,6 +124,66 @@ describe("workspace restore merge", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  describe("host-local dependency trees", () => {
+    // Local workspace with dependency trees at the top level and nested inside
+    // a package, plus look-alike names that must still sync.
+    async function seedWorkspace(): Promise<{ targetDir: string; sourceDir: string }> {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-deps-"));
+      cleanupDirs.push(rootDir);
+      const targetDir = path.join(rootDir, "local");
+      const sourceDir = path.join(rootDir, "remote-staging");
+      await mkdir(path.join(targetDir, "node_modules", "left-pad"), { recursive: true });
+      await mkdir(path.join(targetDir, "pkg", "node_modules", "dep"), { recursive: true });
+      await writeFile(path.join(targetDir, "node_modules", "left-pad", "index.js"), "module.exports = 1;\n", "utf8");
+      await writeFile(path.join(targetDir, "pkg", "node_modules", "dep", "index.js"), "module.exports = 2;\n", "utf8");
+      await writeFile(path.join(targetDir, "pkg", "index.ts"), "export {};\n", "utf8");
+      await writeFile(path.join(targetDir, "node_modules_notes.md"), "keep\n", "utf8");
+      await writeFile(path.join(targetDir, "stale.txt"), "remove me\n", "utf8");
+      // The remote staging copy arrives without dependency trees (tar excluded
+      // them), with one edited file and one deletion.
+      await mkdir(path.join(sourceDir, "pkg"), { recursive: true });
+      await writeFile(path.join(sourceDir, "pkg", "index.ts"), "export const edited = true;\n", "utf8");
+      await writeFile(path.join(sourceDir, "node_modules_notes.md"), "keep\n", "utf8");
+      return { targetDir, sourceDir };
+    }
+
+    it("excludes node_modules at every depth from snapshots but keeps look-alike names", async () => {
+      const { targetDir } = await seedWorkspace();
+      const snapshot = await captureDirectorySnapshot(targetDir, {
+        exclude: [".paperclip-runtime", ...WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES],
+      });
+
+      const paths = [...snapshot.entries.keys()];
+      expect(paths.some((entry) => entry.split("/").includes("node_modules"))).toBe(false);
+      expect(snapshot.entries.has("node_modules_notes.md")).toBe(true);
+      expect(snapshot.entries.has("pkg/index.ts")).toBe(true);
+    });
+
+    it("leaves local dependency trees untouched when the remote copy omits them", async () => {
+      const { targetDir, sourceDir } = await seedWorkspace();
+      const baseline = await captureDirectorySnapshot(targetDir, {
+        exclude: [".paperclip-runtime", ...WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES],
+      });
+
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+
+      expect(await readFile(path.join(targetDir, "node_modules", "left-pad", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+      expect(await readFile(path.join(targetDir, "pkg", "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 2;\n");
+      expect(await readFile(path.join(targetDir, "pkg", "index.ts"), "utf8")).toBe("export const edited = true;\n");
+      await expect(stat(path.join(targetDir, "stale.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("negative control: without the exclude, the same merge deletes the dependency trees", async () => {
+      const { targetDir, sourceDir } = await seedWorkspace();
+      const baseline = await captureDirectorySnapshot(targetDir, { exclude: [".paperclip-runtime"] });
+
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+
+      await expect(stat(path.join(targetDir, "node_modules", "left-pad", "index.js"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(path.join(targetDir, "pkg", "node_modules", "dep", "index.js"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
   });
 
   describe("classifyWorkspaceRestoreFailure", () => {

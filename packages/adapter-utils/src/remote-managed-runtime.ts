@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES } from "./exclude-patterns.js";
 import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
@@ -144,8 +145,8 @@ export async function prepareRemoteManagedRuntime(input: {
   const baselineSnapshot = preparedWorkspace
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
         exclude: preparedWorkspace.gitBacked
-          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
-          : [".paperclip-runtime"],
+          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime", ...WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES]
+          : [".paperclip-runtime", ...WORKSPACE_SYNC_HOST_LOCAL_EXCLUDES],
       })
     : null;
 
