@@ -81,6 +81,8 @@ export type DeferredWakeCandidate = {
   /** The comment ids the wake's context snapshot carries (a separate set from queuedCommentIds), used for the reopen check. */
   deferredCommentIds: string[];
   wakeReason: string | null;
+  /** When the durable wake was first admitted. */
+  requestedAt: Date;
   /** Exact failed-chat retry authority revalidated by the transaction-bound adapter. */
   authorizedFailedChatRetry?: boolean;
 };
@@ -157,7 +159,7 @@ export interface WakeQueueTransaction {
     issueId: string;
     finishingRunId: string;
     commentIds: string[];
-  }): Promise<{ allSelfAuthored: boolean }>;
+  }): Promise<{ allSelfAuthored: boolean; latestCommentCreatedAt: Date | null }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;

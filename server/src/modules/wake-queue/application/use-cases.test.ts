@@ -37,6 +37,9 @@ const ISSUE: IssueSnapshot = {
   companyId: "company-1",
   identifier: "ISSUE-1",
   status: "in_progress",
+  statusVersion: 0,
+  completedAt: null,
+  cancelledAt: null,
   assigneeAgentId: "finishing-agent",
   assigneeUserId: null,
   hiddenAt: null,
@@ -72,6 +75,7 @@ function wakeCandidate(overrides: Partial<DeferredWakeCandidate> = {}): Deferred
     deferredContextSeed: {},
     deferredCommentIds: [],
     wakeReason: "issue_commented",
+    requestedAt: new Date("2026-01-01T00:00:00.000Z"),
     ...overrides,
   };
 }
@@ -113,7 +117,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false, latestCommentCreatedAt: null })),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -570,6 +574,82 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("promoted");
   });
 
+  it("cancels a deferred human comment admitted before a later terminal status revision", async () => {
+    const queuedAt = new Date("2026-09-30T11:20:00.000Z");
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "user",
+      deferredCommentIds: ["stale-human-follow-up"],
+      requestedAt: queuedAt,
+      deferredContextSeed: { deferredIssueStatusVersion: 4 },
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      getCommentSelfAuthorship: vi.fn(async () => ({
+        allSelfAuthored: false,
+        latestCommentCreatedAt: queuedAt,
+      })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, {
+        ...ISSUE,
+        status: "done",
+        statusVersion: 5,
+        completedAt: new Date("2026-09-30T11:26:12.000Z"),
+      }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+      wakeId: "wake-1",
+      reason: "Deferred execution wake no longer applies to a terminal task",
+    }));
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("released");
+  });
+
+  it("preserves a fresh explicit human resume request created after closure", async () => {
+    const resumedAt = new Date("2026-09-30T11:30:00.000Z");
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "user",
+      wakeReason: "issue_reopened_via_comment",
+      deferredCommentIds: ["fresh-human-resume"],
+      requestedAt: resumedAt,
+      deferredContextSeed: {
+        deferredIssueStatusVersion: 5,
+        wakeReason: "issue_reopened_via_comment",
+      },
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      getCommentSelfAuthorship: vi.fn(async () => ({
+        allSelfAuthored: false,
+        latestCommentCreatedAt: resumedAt,
+      })),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, {
+        ...ISSUE,
+        status: "done",
+        statusVersion: 5,
+        completedAt: new Date("2026-09-30T11:26:12.000Z"),
+      }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
+    expect(result.outcome.kind).toBe("promoted");
+  });
+
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
     const commentIds = ["accepted-agent-feedback"];
     const queue = [wakeCandidate({
@@ -587,7 +667,7 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self", latestCommentCreatedAt: null })),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
     const release = createReleaseIssueExecution({
@@ -748,6 +828,7 @@ function admissionInput(
   return {
     companyId: "company-1",
     issueId: "issue-1",
+    issueStatusVersion: 0,
     agentId: "wake-agent",
     agentNameKey: "codexcoder",
     issueExecutionAgentNameKey: null,
@@ -855,7 +936,10 @@ describe("admitWakeBehindIssueExecution", () => {
           durableReceipt,
           payload: {
             issueId: "issue-1",
-            _paperclipWakeContext: contextSnapshot,
+            _paperclipWakeContext: {
+              ...contextSnapshot,
+              deferredIssueStatusVersion: 0,
+            },
           },
         }),
       );
@@ -1027,6 +1111,7 @@ describe("admitWakeBehindIssueExecution", () => {
           _paperclipWakeContext: {
             preservedContext: true,
             wakeReason: "issue_commented",
+            deferredIssueStatusVersion: 0,
           },
         },
         coalescedReceipt: {
