@@ -27,12 +27,17 @@ function runShard(args) {
 
 function readTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
+  // Fork keeps policy editable in-repo via a local reusable workflow call.
   assert.match(
     caller,
-    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
-    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
+    /^\s+uses: \.\/\.github\/workflows\/pr-trusted\.yml\s*$/m,
+    "pr.yml must call the local trusted workflow so fork policy edits take effect",
   );
-  // Validate proposed workflow changes locally; CI executes the merged master version.
+  assert.doesNotMatch(
+    caller,
+    /paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@/,
+    "pr.yml must not call upstream pr-trusted.yml (fork policy would be ignored)",
+  );
   return readFileSync(trustedPrWorkflow, "utf8");
 }
 
@@ -157,7 +162,7 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow from master", () => {
+test("pr.yml calls the local trusted PR workflow", () => {
   assert.ok(readTrustedPrWorkflow().length > 0);
 });
 
