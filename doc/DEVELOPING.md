@@ -17,15 +17,18 @@ Current implementation status:
 
 ## Dependency Lockfile Policy
 
-GitHub Actions owns `pnpm-lock.yaml`.
+CI owns dependency integrity for `pnpm-lock.yaml`.
 
-- Do not commit `pnpm-lock.yaml` in pull requests.
-- Pull request CI validates dependency resolution when manifests change.
+- Pull requests may commit `pnpm-lock.yaml`. The policy job records a notice and does not fail on that diff.
+- Pull request CI validates dependency resolution with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile` and regenerates a stale lockfile for the merge tree.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
 ## Trusted PR Workflow
 
-The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+This fork's PR caller uses `./.github/workflows/pr-trusted.yml`. The fork must
+call that local trusted workflow so policy and lockfile rules can be maintained
+here. Calling upstream `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`
+ignores workflow edits in this repository.
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a
