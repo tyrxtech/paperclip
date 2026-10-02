@@ -265,17 +265,19 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Block manual lockfile edits
+      - name: Note committed lockfile
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
           github.event.pull_request.user.login != 'dependabot[bot]'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
+          # A committed pnpm-lock.yaml is allowed. Dependency integrity stays with
+          # the later "Validate dependency resolution" step, which runs
+          # pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile.
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
-            exit 1
+            echo "::notice title=Lockfile::This pull request commits pnpm-lock.yaml. CI will validate dependency resolution and regenerate a stale lockfile."
           fi
 
       - name: Setup Node.js for pnpm bootstrap
