@@ -6,6 +6,11 @@ on:
 
 # Always runs from base branch context — never executes PR code.
 # pull_request_target gives access to secrets for untrusted fork PRs.
+#
+# Fork note (tyrxtech): upstream GitHub App "commitperclip" (App ID 3718661) is
+# owned by paperclipai. Without Actions secret COMMITPERCLIP_KEY (PEM) AND an
+# installation on this org, bot token + quality gates cannot run. Dependency
+# Review still runs; bot gates skip cleanly instead of failing greening.
 
 permissions:
   pull-requests: write
@@ -28,13 +33,27 @@ jobs:
           base-ref: ${{ github.event.pull_request.base.sha }}
           head-ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Check COMMITPERCLIP_KEY presence
+        id: key
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+        run: |
+          if [ -z "$COMMITPERCLIP_KEY" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::COMMITPERCLIP_KEY is not set. Skipping commitperclip bot token + quality gates on this fork. Dependency Review above still ran. To restore bot review: obtain PEM from paperclipai admins for App commitperclip (3718661), install the app on tyrxtech, set repo Actions secret COMMITPERCLIP_KEY, then re-enable this workflow."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node
+        if: steps.key.outputs.present == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: Generate commitperclip token
         id: token
+        if: steps.key.outputs.present == 'true'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -44,7 +63,7 @@ jobs:
 
       - name: Run quality gates
         id: quality
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: steps.key.outputs.present == 'true' && github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +75,7 @@ jobs:
 
       - name: Fail if quality gates failed
         if: >-
+          steps.key.outputs.present == 'true' &&
           github.event.pull_request.user.login != 'dependabot[bot]' &&
           steps.quality.outcome == 'failure'
         run: |
