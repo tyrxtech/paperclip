@@ -25,9 +25,11 @@ The payload contains only these fields:
 
 The event never contains an issue title, description, comment, identifier,
 request body, response body, provider error body, API key, or environment
-value. The observer accepts only code-reviewed synthetic summaries from its
-allowlist. It also rejects blocked, dependency-blocked, duplicate, and
-unapproved inputs before an external call.
+value. The observer accepts a code-reviewed synthetic summary, or a summary
+derived from a real `PREFIX-NUMBER` issue title. It rejects blocked,
+dependency-blocked, duplicate, and ineligible inputs before an external call.
+Raw descriptions and comments are not inputs. A derived summary that fails the
+existing length and restricted-data checks does not leave Paperclip.
 
 This event stays in the local run log. It does not add a Paperclip Telemetry
 event or an OpenTelemetry span.

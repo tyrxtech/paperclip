@@ -37,14 +37,31 @@ The existing gates remain the only dispatch authority.
 
 Raw titles, descriptions, comments, attachments, logs, credentials, customer or
 vendor identifiers, shipment data, contract text, exposure data, and restricted
-TYR-X data are never sent. The adapter accepts only an exact summary from
-`server/src/services/jev-issue-lane-policy.ts`. Adding an entry is a code-reviewed
-change. The initial registry contains synthetic trial cases only, so enabling
-the feature does not send any existing company issue.
+TYR-X data are never sent as raw fields. Descriptions, comments, attachments,
+and logs are not inputs to the observer.
+
+The adapter accepts one summary from `server/src/services/jev-issue-lane-policy.ts`.
+Policy version `tyr-issue-lanes-v2` has two sources:
+
+1. **Synthetic trial registry.** An exact identifier match uses the reviewed
+   sentence in `JEV_APPROVED_ISSUE_SUMMARIES` and ignores any issue title.
+   Adding a registry entry is a code-reviewed change. The registry still holds
+   only the five synthetic `JEV-TRIAL-*` cases.
+2. **Real queue issue.** The identifier must match a Paperclip issue identifier
+   (`PREFIX-NUMBER`, the same shape as `normalizeIssueIdentifier`). The policy
+   derives the summary from the issue title only. Derivation removes issue
+   identifiers, UUIDs, URLs, email addresses, and long tokens, then applies the
+   existing character limit. The outbound value is that derived summary. When
+   the title already satisfies the checks, the summary can keep the title's
+   ordinary words. It still cannot include an identifier, a URL, an email
+   address, a long token, or a restricted-data term. If derivation produces no
+   text, Paperclip does not call TypeSafe.
 
 The adapter applies a second validation layer: summaries are length-bounded and
-rejected if they contain credential markers, identifier-like strings, URLs,
-email addresses, or restricted-data terms.
+rejected if they contain credential markers, identifier-like strings (including
+issue identifiers), URLs, email addresses, or restricted-data terms. A derived
+summary that fails these checks does not leave Paperclip. The issue identifier
+itself is not part of the request.
 
 The run log records only:
 
@@ -60,14 +77,16 @@ telemetry and not OpenTelemetry.
 
 ## Runtime policy
 
-- Feature flag: `PAPERCLIP_JEV_SHADOW_ENABLED=true` (default `false`).
+- Feature flag: `PAPERCLIP_JEV_SHADOW_ENABLED` must be exactly `true` (default `false`). Any other value leaves the observer off.
 - Credential: `TYPESAFE_API_KEY`.
 - Official SDK: `@typesafe-ai/sdk@0.6.0`.
 - Pinned model: `jev-1.13.0`.
 - Per-attempt timeout: 1.5 seconds.
 - Retries: at most one retry, using the SDK's bounded retry policy.
 - Low confidence: suggestions below 0.60 become `needs_review`.
-- Eligible input: exact reviewed registry entry only.
+- Eligible input: an exact synthetic registry summary, or a summary derived from
+  a real `PREFIX-NUMBER` issue title under the data-boundary rules above. A
+  summary that fails the existing checks makes no call.
 - Blocked/dependency-blocked/duplicate run: no call.
 - Repeated observation of the same running run: no second call.
 
@@ -105,8 +124,10 @@ key.
    container through the normal deployment procedure, then verify from inside
    the container that the variable is present without printing its value (for
    example, test only whether its length is nonzero).
-4. Review and add the intended sanitized trial summaries in
-   `jev-issue-lane-policy.ts`. Never add raw issue content.
+4. Do not add raw issue content to `jev-issue-lane-policy.ts`. The five
+   synthetic trial summaries stay in the registry. A real queue issue does not
+   need a registry entry: its summary is derived from the title under the
+   data-boundary rules above.
 5. After Marc explicitly confirms the secret and corpus, set
    `PAPERCLIP_JEV_SHADOW_ENABLED=true` and recreate only the Paperclip server
    container. This flag change is the explicit live-call gate.
