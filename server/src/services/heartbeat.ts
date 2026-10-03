@@ -20365,13 +20365,15 @@ export function heartbeatService(
       if (issueContext?.identifier) {
         // Shadow-only observation. Paperclip has already selected, admitted,
         // and claimed this run. This promise is intentionally not awaited, so
-        // JEV latency or failure cannot alter dispatch. The adapter accepts
-        // only a reviewed summary from its explicit registry, never raw issue
-        // title/description data, and its receipt has no mutation authority.
+        // JEV latency or failure cannot alter dispatch. The adapter sends only
+        // the policy-derived summary. It does not send the description,
+        // comments, or an unredacted title, and its receipt has no mutation
+        // authority.
         void jevDecisionAdapter
           .suggestIssueLane({
             runId: run.id,
             issueIdentifier: issueContext.identifier,
+            issueTitle: issueContext.title,
             issueStatus: issueContext.status,
             unresolvedDependencyCount:
               issueDependencyReadiness?.unresolvedBlockerCount ?? 0,

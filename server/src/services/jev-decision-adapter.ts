@@ -8,7 +8,7 @@ import {
   type SystemOneResult,
 } from "@typesafe-ai/sdk";
 import {
-  approvedJevIssueSummary,
+  deriveJevIssueLaneSummary,
   JEV_ISSUE_LANE_MODEL,
   JEV_ISSUE_LANE_POLICY_VERSION,
   JEV_ISSUE_LANE_QUESTIONS,
@@ -29,6 +29,7 @@ const DISALLOWED_SUMMARY_PATTERNS: readonly RegExp[] = [
   /\b(?:customer|vendor|shipment|tracking|contract|agreement|exposure)[_ -]?(?:id|number|text|data)?\b/i,
   /\b(?:confidential|restricted|stack trace|raw log)\b/i,
   /\b[A-F0-9]{8}-[A-F0-9]{4}-[1-5][A-F0-9]{3}-[89AB][A-F0-9]{3}-[A-F0-9]{12}\b/i,
+  /\b[A-Z][A-Z0-9]*-\d+\b/i,
   /\b[A-Za-z0-9+/=_-]{32,}\b/,
   /\bhttps?:\/\//i,
   /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/,
@@ -58,6 +59,8 @@ export type JevShadowObservation = {
   issueStatus: string;
   unresolvedDependencyCount: number;
   duplicateRun: boolean;
+  /** Title used only to derive a real-issue summary. Descriptions and comments are not accepted. */
+  issueTitle?: string | null;
 };
 
 type JevClient = Pick<TypeSafeClient, "systemOne">;
@@ -74,6 +77,15 @@ function validateApprovedSummary(summary: string): boolean {
     return false;
   }
   return !DISALLOWED_SUMMARY_PATTERNS.some((pattern) => pattern.test(summary));
+}
+
+function summaryForObservation(observation: JevShadowObservation): string | null {
+  const summary = deriveJevIssueLaneSummary({
+    identifier: observation.issueIdentifier,
+    title: observation.issueTitle,
+  });
+  if (!summary || !validateApprovedSummary(summary)) return null;
+  return summary;
 }
 
 function probabilitiesAreValid(
@@ -142,13 +154,12 @@ export class JevDecisionAdapter {
     if (!this.#enabled || !this.#client) return false;
     if (observation.issueStatus === "blocked" || observation.unresolvedDependencyCount > 0) return false;
     if (observation.duplicateRun || this.#observedRuns.has(observation.runId)) return false;
-    const summary = approvedJevIssueSummary(observation.issueIdentifier);
-    return summary !== null && validateApprovedSummary(summary);
+    return summaryForObservation(observation) !== null;
   }
 
   async suggestIssueLane(observation: JevShadowObservation): Promise<JevShadowReceipt | null> {
     if (!this.isEligible(observation) || !this.#client) return null;
-    const summary = approvedJevIssueSummary(observation.issueIdentifier);
+    const summary = summaryForObservation(observation);
     if (!summary) return null;
 
     this.#observedRuns.add(observation.runId);

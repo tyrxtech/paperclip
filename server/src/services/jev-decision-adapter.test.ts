@@ -1,7 +1,11 @@
 import { APITimeoutError } from "@typesafe-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { JevDecisionAdapter } from "./jev-decision-adapter.js";
-import { JEV_ISSUE_LANE_MODEL, type JevIssueLane } from "./jev-issue-lane-policy.js";
+import {
+  approvedJevIssueSummary,
+  JEV_ISSUE_LANE_MODEL,
+  type JevIssueLane,
+} from "./jev-issue-lane-policy.js";
 
 const lanes: JevIssueLane[] = [
   "engineering",
@@ -34,6 +38,7 @@ function observation(issueIdentifier: string, overrides: Partial<{
   issueStatus: string;
   unresolvedDependencyCount: number;
   duplicateRun: boolean;
+  issueTitle: string | null;
 }> = {}) {
   return {
     runId: overrides.runId ?? `run-${issueIdentifier}`,
@@ -41,6 +46,7 @@ function observation(issueIdentifier: string, overrides: Partial<{
     issueStatus: overrides.issueStatus ?? "in_progress",
     unresolvedDependencyCount: overrides.unresolvedDependencyCount ?? 0,
     duplicateRun: overrides.duplicateRun ?? false,
+    issueTitle: overrides.issueTitle,
   };
 }
 
@@ -82,7 +88,7 @@ describe("JevDecisionAdapter shadow issue-lane suggestions", () => {
       model: JEV_ISSUE_LANE_MODEL,
       state: {
         approved_sanitized_issue_summary: expect.any(String),
-        policy_version: "tyr-issue-lanes-v1",
+        policy_version: "tyr-issue-lanes-v2",
       },
     }));
     expect(JSON.stringify(request)).not.toContain(identifier);
@@ -121,12 +127,134 @@ describe("JevDecisionAdapter shadow issue-lane suggestions", () => {
     expect(systemOne).toHaveBeenCalledTimes(1);
   });
 
-  it("does not call TypeSafe for an unapproved issue summary", async () => {
+  it("does not call TypeSafe for an identifier that is neither a trial nor a real issue", async () => {
     const { adapter, systemOne } = adapterFor("engineering");
     await expect(
-      adapter.suggestIssueLane(observation("TYR-UNREVIEWED")),
+      adapter.suggestIssueLane(observation("TYR-UNREVIEWED", {
+        issueTitle: "Implement a server-side retry guard and add unit tests",
+      })),
     ).resolves.toBeNull();
     expect(systemOne).not.toHaveBeenCalled();
+  });
+
+  it.each(["PAP-1842", "PC1A2-7"])(
+    "derives a summary for real issue %s and does not send the identifier",
+    async (identifier) => {
+      const { adapter, systemOne } = adapterFor("engineering");
+      const receipt = await adapter.suggestIssueLane(observation(identifier, {
+        issueTitle: `Repair the checkout retry ${identifier} https://example.com/run`,
+      }));
+
+      expect(receipt).toEqual({
+        suggestedLane: "engineering",
+        probabilities: expect.objectContaining({ engineering: 0.9 }),
+        modelVersion: JEV_ISSUE_LANE_MODEL,
+        elapsedMs: 25,
+        tokens: { input: 25, output: 5, total: 30 },
+        errorCategory: null,
+      });
+      expect(JSON.stringify(receipt)).not.toContain(identifier);
+      expect(JSON.stringify(receipt)).not.toContain("checkout");
+      expect(systemOne).toHaveBeenCalledTimes(1);
+      const request = systemOne.mock.calls[0]![0];
+      expect(request.state.approved_sanitized_issue_summary).toBe("Repair the checkout retry");
+      expect(JSON.stringify(request)).not.toContain(identifier);
+      expect(JSON.stringify(request)).not.toContain("http");
+      expect(JSON.stringify(request)).not.toContain("example.com");
+    },
+  );
+
+  it("keeps a synthetic trial on its reviewed summary when a title is also present", async () => {
+    const { adapter, systemOne } = adapterFor("engineering");
+    await adapter.suggestIssueLane(observation("JEV-TRIAL-ENGINEERING", {
+      issueTitle: "customer contract password https://secret.example/a PAP-1",
+    }));
+
+    const request = systemOne.mock.calls[0]![0];
+    expect(request.state.approved_sanitized_issue_summary).toBe(
+      approvedJevIssueSummary("JEV-TRIAL-ENGINEERING"),
+    );
+    expect(JSON.stringify(request)).not.toContain("password");
+    expect(JSON.stringify(request)).not.toContain("http");
+    expect(JSON.stringify(request)).not.toContain("PAP-1");
+  });
+
+  it.each([
+    ["missing title", undefined],
+    ["identifier-only title", "PAP-1842"],
+    ["restricted title", "Reset the api key for the provider"],
+  ] as const)("does not call TypeSafe for a real issue with a %s", async (_caseName, issueTitle) => {
+    const { adapter, systemOne } = adapterFor("engineering");
+    await expect(
+      adapter.suggestIssueLane(observation("PAP-1842", { issueTitle })),
+    ).resolves.toBeNull();
+    expect(systemOne).not.toHaveBeenCalled();
+  });
+
+  it("does not call TypeSafe for a real issue when the flag is off", async () => {
+    const systemOne = vi.fn();
+    const adapter = new JevDecisionAdapter({
+      enabled: false,
+      apiKey: "test-only",
+      client: { systemOne } as never,
+    });
+    await expect(
+      adapter.suggestIssueLane(observation("PAP-1842", {
+        issueTitle: "Repair the checkout retry",
+      })),
+    ).resolves.toBeNull();
+    expect(systemOne).not.toHaveBeenCalled();
+  });
+
+  it("does not call TypeSafe for a real issue when the key is missing", async () => {
+    const adapter = new JevDecisionAdapter({ enabled: true, apiKey: "" });
+    await expect(
+      adapter.suggestIssueLane(observation("PAP-1842", {
+        issueTitle: "Repair the checkout retry",
+      })),
+    ).resolves.toBeNull();
+  });
+
+  it("does not treat a non-exact flag or a missing env key as enabled", async () => {
+    const previousFlag = process.env.PAPERCLIP_JEV_SHADOW_ENABLED;
+    const previousKey = process.env.TYPESAFE_API_KEY;
+    const realIssue = observation("PAP-1842", { issueTitle: "Repair the checkout retry" });
+    try {
+      process.env.PAPERCLIP_JEV_SHADOW_ENABLED = "TRUE";
+      process.env.TYPESAFE_API_KEY = "test-only";
+      await expect(new JevDecisionAdapter().suggestIssueLane(realIssue)).resolves.toBeNull();
+
+      process.env.PAPERCLIP_JEV_SHADOW_ENABLED = "true";
+      delete process.env.TYPESAFE_API_KEY;
+      await expect(new JevDecisionAdapter().suggestIssueLane(realIssue)).resolves.toBeNull();
+    } finally {
+      if (previousFlag === undefined) delete process.env.PAPERCLIP_JEV_SHADOW_ENABLED;
+      else process.env.PAPERCLIP_JEV_SHADOW_ENABLED = previousFlag;
+      if (previousKey === undefined) delete process.env.TYPESAFE_API_KEY;
+      else process.env.TYPESAFE_API_KEY = previousKey;
+    }
+  });
+
+  it("does not send an email address or unused issue text for a real issue", async () => {
+    const { adapter, systemOne } = adapterFor("engineering");
+    const input = {
+      ...observation("PAP-1842", {
+        issueTitle: "Repair the checkout retry for ada@example.com",
+      }),
+      issueDescription: "customer contract raw description",
+      commentBody: "password in a comment",
+    };
+
+    await adapter.suggestIssueLane(input);
+
+    expect(systemOne).toHaveBeenCalledTimes(1);
+    const request = JSON.stringify(systemOne.mock.calls[0]![0]);
+    expect(request).toContain("Repair the checkout retry for");
+    expect(request).not.toContain("ada@");
+    expect(request).not.toContain("example.com");
+    expect(request).not.toContain("customer contract");
+    expect(request).not.toContain("password");
+    expect(request).not.toContain("PAP-1842");
   });
 
   it("fails open with a bounded timeout category", async () => {
