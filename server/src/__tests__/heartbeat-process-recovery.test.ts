@@ -14374,6 +14374,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     );
 
+    it.each(["board", "chat"] as const)(
+      "leaves continued %s work with a paused assignee after an older response wait",
+      async (kind) => {
+        const f = await seedPassive(kind);
+        await db
+          .update(issues)
+          .set({ lastStatusDecisionId: randomUUID() })
+          .where(eq(issues.id, f.issueId));
+        const result =
+          await heartbeatService(db).reconcileStrandedAssignedIssues();
+        expect(result.escalated).toBe(0);
+        expect(result.continuationRequeued).toBe(0);
+        expect(
+          (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]
+            ?.status,
+        ).toBe("in_progress");
+        expect(
+          await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.companyId, f.companyId)),
+        ).toEqual([{ id: f.runId }]);
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+      },
+    );
+
     it("preserves existing error-agent passive wait behavior without treating it as paused", async () => {
       const f = await seedPassive("chat");
       await db

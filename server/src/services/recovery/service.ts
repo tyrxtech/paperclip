@@ -1140,9 +1140,23 @@ export function recoveryService(
   }
 
   async function hasAppliedResponseWaitDecision(companyId: string, issueId: string) {
+    // Applied rows are not cleared when a later decision supersedes them.
+    // Only the current status decision, or a wait whose pointer was detached
+    // without a replacement, is a stale response wait.
     const [row] = await db
       .select({ id: statusDecisions.id })
       .from(statusDecisions)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, statusDecisions.companyId),
+          eq(issues.id, statusDecisions.issueId),
+          or(
+            eq(issues.lastStatusDecisionId, statusDecisions.id),
+            isNull(issues.lastStatusDecisionId),
+          ),
+        ),
+      )
       .where(
         and(
           eq(statusDecisions.companyId, companyId),
