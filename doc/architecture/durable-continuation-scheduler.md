@@ -86,6 +86,14 @@ for reasons not to wake the agent, including:
 - invocation budget or retry/backoff policy prevents a run; or
 - recovery has failed enough times that the issue should be escalated instead.
 
+A paused assignee is not a permanent strand. Recovery leaves in-progress work,
+and todo work that already has a run, with that owner. The next sweep resumes
+a run that failed before provider work once the assignee is invokable again.
+A run that failed after provider work started escalates to the board and does
+not retry. A terminated or missing assignee still escalates immediately. A
+native response wait that is no longer current still escalates. Assigned todo
+work with no run still escalates.
+
 For an eligible `in_progress` issue with no live path, it creates an automated
 wake/run with:
 

@@ -45,6 +45,10 @@ export function legacyExecutionNeedsReconciliation(
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // Cancelling a run that never started provider work is not a new execution
+  // to reconcile, even when the failure-retry counter is already exhausted.
+  // Unknown cancelled outcomes, and exhausted failed bootstrap attempts, stay held.
+  if (run.status === "cancelled" && evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false

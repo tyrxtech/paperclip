@@ -9650,40 +9650,51 @@ export function issueRoutes(
         }
       } else if (
         !executionReconciliation &&
+        outcome !== "cancelled" &&
+        result.recoveryAction.cause !== "stranded_assigned_issue" &&
+        !requiresExecutionReconciliation(result.recoveryAction.cause) &&
         sourceIssueStatus === "todo" &&
         result.issue.assigneeAgentId &&
         (existing.status !== result.issue.status ||
           existing.assigneeAgentId !== result.issue.assigneeAgentId)
       ) {
-        try {
-          await enqueueRecoveryActionWakeup(result.issue.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_recovery_action_restored",
-            payload: {
-              issueId: result.issue.id,
-              recoveryActionId: result.recoveryAction.id,
-              mutation: "recovery_action_resolution",
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: result.issue.id,
-              taskId: result.issue.id,
-              wakeReason: "issue_recovery_action_restored",
-              source: "issue.recovery_action_resolution",
-              recoveryActionId: result.recoveryAction.id,
-            },
-          });
-        } catch (err) {
-          logger.warn(
-            {
-              err,
-              issueId: result.issue.id,
-              agentId: result.issue.assigneeAgentId,
-            },
-            "failed to wake agent after recovery action restored issue",
-          );
+        const assignee = await agentsSvc.getById(result.issue.assigneeAgentId);
+        const assigneeCanStart =
+          assignee?.companyId === result.issue.companyId &&
+          assignee.status !== "paused" &&
+          assignee.status !== "terminated" &&
+          assignee.status !== "pending_approval";
+        if (assigneeCanStart) {
+          try {
+            await enqueueRecoveryActionWakeup(result.issue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_recovery_action_restored",
+              payload: {
+                issueId: result.issue.id,
+                recoveryActionId: result.recoveryAction.id,
+                mutation: "recovery_action_resolution",
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: result.issue.id,
+                taskId: result.issue.id,
+                wakeReason: "issue_recovery_action_restored",
+                source: "issue.recovery_action_resolution",
+                recoveryActionId: result.recoveryAction.id,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              {
+                err,
+                issueId: result.issue.id,
+                agentId: result.issue.assigneeAgentId,
+              },
+              "failed to wake agent after recovery action restored issue",
+            );
+          }
         }
       }
 

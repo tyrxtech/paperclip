@@ -12755,11 +12755,12 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
 
-    // Cancelling a queued run that never acquired provider execution is
-    // positive bootstrap evidence. It must not hold unrelated queued messages.
+    // Cancelling a run that never acquired provider execution is positive
+    // bootstrap evidence, whether it was still queued or waiting on a
+    // scheduled retry. It must not hold unrelated queued messages.
     if (
       status === "cancelled" &&
-      previousStatus?.status === "queued" &&
+      (previousStatus?.status === "queued" || previousStatus?.status === "scheduled_retry") &&
       previousStatus.runtimeMode !== "native" &&
       !previousStatus.startedAt &&
       !previousStatus.processPid
@@ -12839,11 +12840,12 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
 
-    // Cancelling a queued run that never acquired provider execution is
-    // positive bootstrap evidence. It must not hold unrelated queued messages.
+    // Cancelling a run that never acquired provider execution is positive
+    // bootstrap evidence, whether it was still queued or waiting on a
+    // scheduled retry. It must not hold unrelated queued messages.
     if (
       status === "cancelled" &&
-      previousStatus?.status === "queued" &&
+      (previousStatus?.status === "queued" || previousStatus?.status === "scheduled_retry") &&
       previousStatus.runtimeMode !== "native" &&
       !previousStatus.startedAt &&
       !previousStatus.processPid

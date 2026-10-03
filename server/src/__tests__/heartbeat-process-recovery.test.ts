@@ -8816,6 +8816,149 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakes).toHaveLength(0);
   });
 
+  it("leaves in-progress work with a paused assignee and resumes it when that assignee is invokable", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    const paused = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(paused.escalated).toBe(0);
+    expect(paused.continuationRequeued).toBe(0);
+    expect(paused.issueIds).not.toContain(issueId);
+    expect(
+      await db.select().from(issues).where(eq(issues.id, issueId)),
+    ).toEqual([expect.objectContaining({ status: "in_progress", assigneeAgentId: agentId })]);
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([]);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const resumed = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(resumed.continuationRequeued).toBe(1);
+    expect(resumed.escalated).toBe(0);
+    expect(resumed.issueIds).toEqual([issueId]);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    expect(runs.find((row) => row.id !== runId)).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+    });
+    expect(
+      await db.select().from(issues).where(eq(issues.id, issueId)),
+    ).toEqual([expect.objectContaining({ status: "in_progress", assigneeAgentId: agentId })]);
+  });
+
+  it("escalates a mid-work failure to the board after the assignee is invokable again, without a retry", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    const paused = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(paused.escalated).toBe(0);
+    expect(paused.continuationRequeued).toBe(0);
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([]);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const resumed = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(resumed.escalated).toBe(1);
+    expect(resumed.continuationRequeued).toBe(0);
+    expect(resumed.issueIds).toEqual([issueId]);
+    expect(
+      await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+    ).toEqual([expect.objectContaining({ id: runId })]);
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([
+      expect.objectContaining({
+        ownerType: "board",
+        cause: "legacy_execution_requires_reconciliation",
+        returnOwnerAgentId: agentId,
+        status: "active",
+      }),
+    ]);
+  });
+
+  it("still escalates when the assignee is gone", async () => {
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "adapter exited",
+    });
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    expect(
+      await db.select().from(issues).where(eq(issues.id, issueId)),
+    ).toEqual([expect.objectContaining({ status: "blocked", assigneeAgentId: agentId })]);
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([
+      expect.objectContaining({
+        ownerType: "board",
+        cause: "stranded_assigned_issue",
+        returnOwnerAgentId: agentId,
+      }),
+    ]);
+    expect(
+      await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+    ).toHaveLength(1);
+  });
+
+  it("does not re-block or restart a todo issue after a queued run is cancelled before it starts", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "cancelled",
+      runError: "Cancelled by a board operator",
+      resultJson: {
+        cancelledByActorType: "user",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    });
+    await db.update(heartbeatRuns).set({
+      startedAt: null,
+      processPid: null,
+      scheduledRetryAttempt: 2,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    const paused = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(paused.escalated).toBe(0);
+    expect(paused.continuationRequeued).toBe(0);
+    expect(paused.dispatchRequeued).toBe(0);
+    expect(paused.operatorCancelExempted).toBe(1);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const resumed = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(resumed.escalated).toBe(0);
+    expect(resumed.continuationRequeued).toBe(0);
+    expect(resumed.dispatchRequeued).toBe(0);
+    expect(resumed.operatorCancelExempted).toBe(1);
+    expect(
+      await db.select().from(issues).where(eq(issues.id, issueId)),
+    ).toEqual([expect.objectContaining({ status: "todo", assigneeAgentId: agentId })]);
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([]);
+    expect(
+      await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+    ).toEqual([expect.objectContaining({ id: runId, status: "cancelled" })]);
+  });
+
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({

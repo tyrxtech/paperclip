@@ -844,6 +844,17 @@ function isStrandedIssueRecoveryIssue(
  * stopped the agent, and re-waking it — or escalating "stranding" — would
  * fight the human. Any newer run or wake supersedes the exemption.
  */
+/**
+ * A cancel of a run that never started provider work is not a new execution.
+ * Recovery must not block the issue or queue a successor while this run is
+ * the latest activity. A later run supersedes the exemption.
+ */
+function isNeverStartedCancellation(latestRun: LatestIssueRun): boolean {
+  if (!latestRun || latestRun.status !== "cancelled" || latestRun.startedAt) return false;
+  const evidence = parseObject(parseObject(latestRun.resultJson).executionRecovery);
+  return evidence.kind === "bootstrap" && evidence.providerWorkStarted === false;
+}
+
 function isOperatorCancelledRun(
   latestRun: LatestIssueRun,
   currentAgentId: string,
@@ -1126,6 +1137,25 @@ export function recoveryService(
     ]);
 
     return Boolean(run || deferredWake || nativeRecovery);
+  }
+
+  async function hasAppliedResponseWaitDecision(companyId: string, issueId: string) {
+    const [row] = await db
+      .select({ id: statusDecisions.id })
+      .from(statusDecisions)
+      .where(
+        and(
+          eq(statusDecisions.companyId, companyId),
+          eq(statusDecisions.issueId, issueId),
+          eq(statusDecisions.applicationState, "applied"),
+          inArray(statusDecisions.reasonCode, [
+            "board_response_waiting",
+            "external_chat_response_waiting",
+          ]),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -4495,6 +4525,25 @@ export function recoveryService(
           } else {
             result.skipped += 1;
           }
+        } else if (isNeverStartedCancellation(latestRun)) {
+          result.operatorCancelExempted += 1;
+        } else if (
+          agent?.status === "paused" &&
+          agent.companyId === issue.companyId &&
+          !(
+            issue.status === "in_progress" &&
+            (await hasAppliedResponseWaitDecision(issue.companyId, issue.id))
+          ) &&
+          (issue.status === "in_progress" ||
+            (issue.status === "todo" && latestRun))
+        ) {
+          // A contain pause is temporary. Leave in-progress work, and todo
+          // work that already has a run, with the owner. The next sweep
+          // resumes a run that failed before provider work, and escalates a
+          // run that failed mid-work. A native response wait that is no
+          // longer current still escalates below. Assigned todo with no run
+          // is not this case.
+          result.skipped += 1;
         } else {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -4581,7 +4630,10 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      if (isOperatorCancelledRun(executionRecoverySource, agentId)) {
+      if (
+        isOperatorCancelledRun(executionRecoverySource, agentId) ||
+        isNeverStartedCancellation(executionRecoverySource)
+      ) {
         result.operatorCancelExempted += 1;
         continue;
       }
