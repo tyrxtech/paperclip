@@ -2253,6 +2253,99 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it.each(["idle", "paused"] as const)("does not enqueue work when a stranded hold is restored to todo (%s assignee)", async (agentStatus) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: agentStatus }).where(eq(agents.id, coderId));
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `stranded:${agentStatus}`,
+      nextAction: "Choose the next action.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const wake = vi.fn(async () => null);
+    const resolved = await request(createApp(undefined, { recoveryActionEnqueueWakeup: wake }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Do not start remediation.",
+      })
+      .expect(200);
+    expect(resolved.body.issue).toMatchObject({ status: "todo", assigneeAgentId: coderId, activeRecoveryAction: null });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue work when a recovery hold is cancelled", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:cancel",
+      nextAction: "Choose the next action.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const wake = vi.fn(async () => null);
+    await request(createApp(undefined, { recoveryActionEnqueueWakeup: wake }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "cancelled",
+        sourceIssueStatus: "done",
+        resolutionNote: "Hold closed without remediation.",
+      })
+      .expect(200);
+    expect(wake).not.toHaveBeenCalled();
+    expect(
+      await db.select().from(issues).where(eq(issues.id, sourceIssueId)),
+    ).toEqual([expect.objectContaining({ status: "done", assigneeAgentId: coderId })]);
+  });
+
+  it("does not enqueue a restored wake when the assignee is paused", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace:paused-owner",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Repair the workspace and hand the issue back.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const wake = vi.fn(async () => null);
+    const resolved = await request(createApp(undefined, { recoveryActionEnqueueWakeup: wake }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Workspace repaired. Assignee is still paused.",
+      })
+      .expect(200);
+    expect(resolved.body.issue).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db

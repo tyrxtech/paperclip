@@ -81,6 +81,24 @@ it.each(["failed", "timed_out", "cancelled"])("holds an unsafe archive after %s 
 });
 
 
+it("does not reconcile a cancelled run that never started provider work, even after retries are exhausted", () => {
+  const cancelled = {
+    runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled", scheduledRetryAttempt: 2,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  };
+  expect(legacyExecutionNeedsReconciliation(cancelled)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...cancelled, status: "failed", errorCode: "process_lost",
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...cancelled, resultJson: {},
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...cancelled,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+  })).toBe(true);
+});
+
 it("retains conversation retry eligibility for a transient restore lock timeout", () => {
   expect(legacyExecutionNeedsReconciliation({ runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed", resultJson: {
     workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
