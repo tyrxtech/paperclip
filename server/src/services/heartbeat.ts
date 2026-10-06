@@ -6816,7 +6816,8 @@ function modelRouteAdmissionKey(
     readNonEmptyString(config.route) ??
     readNonEmptyString(config.model);
   if (!candidate) return null;
-  const normalized = candidate.trim().toLowerCase();
+  const configured = candidate.trim().toLowerCase();
+  const normalized = configured.slice(configured.lastIndexOf("/") + 1);
   return MODEL_ROUTE_ADMISSION_LIMITS.has(normalized) ? normalized : null;
 }
 
@@ -16974,7 +16975,7 @@ export function heartbeatService(
           ne(heartbeatRuns.id, runId),
           or(
             sql`${heartbeatRuns.runnerProfileJson} #>> '{modelRouteAdmission,key}' = ${routeKey}`,
-            sql`lower(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model')) = ${routeKey}`,
+            sql`lower(regexp_replace(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model'), '^.*/', '')) = ${routeKey}`,
           ),
         ),
       );
@@ -20070,7 +20071,7 @@ export function heartbeatService(
         and(
           eq(heartbeatRuns.companyId, completedRun.companyId),
           eq(heartbeatRuns.status, "queued"),
-          sql`lower(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model')) = ${routeKey}`,
+          sql`lower(regexp_replace(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model'), '^.*/', '')) = ${routeKey}`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
