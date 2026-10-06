@@ -17810,6 +17810,25 @@ export function heartbeatService(
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
           return tx.transaction(async (claimTx) => {
+            // Comment claims lock the issue row before the company route
+            // advisory lock. Take the issue lock first here so both paths
+            // use that order.
+            const issueClaim = nativeReviewContext
+              ? { ownsIssue: false, blocked: false }
+              : await lockIssueExecutionClaim(claimTx as unknown as Db);
+            if (issueClaim.blocked) return null;
+            if (nativeReviewContext && issueId) {
+              await claimTx
+                .select({ id: issues.id })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.id, issueId),
+                    eq(issues.companyId, run.companyId),
+                  ),
+                )
+                .for("update");
+            }
             const routeAdmission = await acquireModelRouteAdmission(
               claimTx as unknown as Db,
               agent,
@@ -17832,8 +17851,6 @@ export function heartbeatService(
                 agentNameKey: normalizeAgentNameKey(agent.name),
               });
             }
-            const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
-            if (issueClaim.blocked) return null;
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
@@ -20066,22 +20083,33 @@ export function heartbeatService(
       modelRouteAdmissionKey((await getAgent(completedRun.agentId))?.adapterConfig);
     if (!routeKey) return [];
 
-    const next = await db
-      .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, completedRun.companyId),
-          eq(heartbeatRuns.status, "queued"),
-          sql`lower(regexp_replace(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model'), '^.*/', '')) = ${routeKey}`,
-        ),
-      )
-      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (!next) return [];
-    return startNextQueuedRunForAgent(next.agentId, next.id);
+    // The oldest waiter can stay queued while its issue lease settles, or be
+    // cancelled when dependencies are blocked, without taking the slot. Offer
+    // the slot to each later waiter until one starts.
+    const skipped = new Set<string>();
+    for (;;) {
+      const next = await db
+        .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, completedRun.companyId),
+            eq(heartbeatRuns.status, "queued"),
+            sql`lower(regexp_replace(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model'), '^.*/', '')) = ${routeKey}`,
+            skipped.size > 0
+              ? notInArray(heartbeatRuns.id, [...skipped])
+              : undefined,
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!next || skipped.has(next.id)) return [];
+      skipped.add(next.id);
+      const claimed = await startNextQueuedRunForAgent(next.agentId, next.id);
+      if (claimed.length > 0) return claimed;
+    }
   }
 
   // Await every background heartbeat execution that is currently in flight. A
