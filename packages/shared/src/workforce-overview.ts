@@ -78,6 +78,7 @@ export interface WorkforceOverviewSnapshot {
   projects: WorkforceProjectInput[];
   issues: WorkforceIssueInput[];
   blockerEdges: Array<{ blockerIssueId: string; blockedIssueId: string }>;
+  recoveryIssueIds: string[];
   approvals: WorkforceApprovalInput[];
   runs: WorkforceRunInput[];
   activity: WorkforceActivityInput[];
@@ -451,9 +452,10 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
 
   const executingAgents = agentCards.filter((agent) => agent.disposition === "executing");
   const pausedAgents = agentCards.filter((agent) => agent.disposition === "paused");
+  const recoveryIssueIds = new Set(snapshot.recoveryIssueIds);
 
   const waitingEligible = snapshot.issues.filter((issue) =>
-    isWaitingEligible(issue, agentsById, unresolvedBlockedIssueIds, liveRunByIssue, runsById),
+    isWaitingEligible(issue, agentsById, unresolvedBlockedIssueIds, recoveryIssueIds, liveRunByIssue, runsById),
   );
   const blockedIssues = snapshot.issues.filter((issue) => issue.status === "blocked");
   const pendingReviews = snapshot.issues.filter((issue) => issue.status === "in_review");
@@ -466,6 +468,7 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
       toProjectCard(project, {
         agentsById,
         issues: snapshot.issues,
+        issuesById,
         blockersByIssue,
         workProducts: snapshot.workProducts,
         runsById,
@@ -476,8 +479,8 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const blockerItems = blockedIssues.map((issue) => toBlockerItem(issue, blockersByIssue, agentsById, membersById));
-  const decisions = toDecisions(snapshot.approvals, pendingReviews, marcIds, marcMembers, membersById);
+  const blockerItems = blockedIssues.map((issue) => toBlockerItem(issue, blockersByIssue, agentsById, issuesById, membersById));
+  const decisions = toDecisions(snapshot.approvals, pendingReviews, marcIds, marcMembers, membersById, agentsById, issuesById);
   const marcDecisionItems = decisions.filter((decision) => decision.marc);
   const securityItems = [...blockerItems, ...decisions].filter((item) => item.security);
 
@@ -514,7 +517,7 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
       waitingEligible: {
         value: waitingEligible.length,
         label: "Waiting eligible",
-        detail: "Todo tasks whose assignee can be invoked, with no open blocker and no live run.",
+        detail: "Todo tasks whose assignee can be invoked, with no open blocker, active recovery, or live run.",
       },
       blocked: {
         value: blockedIssues.length,
@@ -548,7 +551,7 @@ export function projectWorkforceOverview(snapshot: WorkforceOverviewSnapshot): W
       security: {
         value: securityItems.length,
         label: "Security",
-        detail: "Blocked tasks and open decisions labeled security by label, assignee role, or approval title.",
+        detail: "Blocked tasks and open decisions identified by security labels, titles, or reporting chain.",
       },
     },
     projects: projectCards,
@@ -602,10 +605,33 @@ function dispositionLabel(disposition: WorkforceAgentDisposition): string {
   }
 }
 
-function isSecurityIssue(issue: WorkforceIssueInput, agentsById: Map<string, WorkforceAgentInput>): boolean {
-  if (issue.labelNames.some((label) => /security/i.test(label))) return true;
-  const assignee = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) : undefined;
-  return assignee?.role === "security";
+function isSecurityIssue(
+  issue: WorkforceIssueInput,
+  agentsById: Map<string, WorkforceAgentInput>,
+  issuesById: Map<string, WorkforceIssueInput>,
+): boolean {
+  const visitedIssues = new Set<string>();
+  let current: WorkforceIssueInput | undefined = issue;
+  while (current && !visitedIssues.has(current.id)) {
+    visitedIssues.add(current.id);
+    if (current.labelNames.some((label) => /\bsecurity\b|\bAI-SEC\b/i.test(label))) return true;
+    if (/\bAI-SEC\b/i.test(current.title)) return true;
+    if (isSecurityAgent(current.assigneeAgentId, agentsById)) return true;
+    current = current.parentId ? issuesById.get(current.parentId) : undefined;
+  }
+  return false;
+}
+
+function isSecurityAgent(agentId: string | null, agentsById: Map<string, WorkforceAgentInput>): boolean {
+  const visited = new Set<string>();
+  while (agentId && !visited.has(agentId)) {
+    visited.add(agentId);
+    const agent = agentsById.get(agentId);
+    if (!agent) break;
+    if (agent.role === "security" || /\bsecurity\b/i.test(agent.name) || /\bsecurity\b/i.test(agent.title ?? "")) return true;
+    agentId = agent.reportsTo;
+  }
+  return false;
 }
 
 function isActiveProject(project: WorkforceProjectInput): boolean {
@@ -624,11 +650,13 @@ function isWaitingEligible(
   issue: WorkforceIssueInput,
   agentsById: Map<string, WorkforceAgentInput>,
   unresolvedBlockedIssueIds: Set<string>,
+  recoveryIssueIds: Set<string>,
   liveRunByIssue: Map<string, WorkforceRunInput>,
   runsById: Map<string, WorkforceRunInput>,
 ): boolean {
   if (issue.status !== "todo") return false;
   if (unresolvedBlockedIssueIds.has(issue.id)) return false;
+  if (recoveryIssueIds.has(issue.id)) return false;
   if (liveRunByIssue.has(issue.id)) return false;
   const checkout = issue.checkoutRunId ? runsById.get(issue.checkoutRunId) : undefined;
   if (checkout && LIVE_RUN_STATUSES.has(checkout.status)) return false;
@@ -685,6 +713,7 @@ function toProjectCard(
   ctx: {
     agentsById: Map<string, WorkforceAgentInput>;
     issues: WorkforceIssueInput[];
+    issuesById: Map<string, WorkforceIssueInput>;
     blockersByIssue: Map<string, WorkforceIssueInput[]>;
     workProducts: WorkforceWorkProductInput[];
     runsById: Map<string, WorkforceRunInput>;
@@ -725,7 +754,7 @@ function toProjectCard(
         title: issue.title,
         releaseCondition: releaseCondition(issue, blocking),
         href: issueHref(issue),
-        security: isSecurityIssue(issue, ctx.agentsById),
+        security: isSecurityIssue(issue, ctx.agentsById, ctx.issuesById),
       };
     });
 
@@ -936,6 +965,7 @@ function toBlockerItem(
   issue: WorkforceIssueInput,
   blockersByIssue: Map<string, WorkforceIssueInput[]>,
   agentsById: Map<string, WorkforceAgentInput>,
+  issuesById: Map<string, WorkforceIssueInput>,
   membersById: Map<string, { userId: string; name: string }>,
 ): WorkforceBlockerItem {
   const blocking = blockersByIssue.get(issue.id) ?? [];
@@ -950,7 +980,7 @@ function toBlockerItem(
     title: issue.title,
     href: issueHref(issue),
     releaseCondition: releaseCondition(issue, blocking),
-    security: isSecurityIssue(issue, agentsById),
+    security: isSecurityIssue(issue, agentsById, issuesById),
     owner,
   };
 }
@@ -961,6 +991,8 @@ function toDecisions(
   marcIds: Set<string>,
   marcMembers: Array<{ userId: string; name: string }>,
   membersById: Map<string, { userId: string; name: string }>,
+  agentsById: Map<string, WorkforceAgentInput>,
+  issuesById: Map<string, WorkforceIssueInput>,
 ): WorkforceDecisionItem[] {
   const marcLabel = marcMembers.map((member) => member.name).join(", ");
   const openApprovals = approvals.filter((approval) => approval.status === "pending" || approval.status === "revision_requested");
@@ -982,7 +1014,7 @@ function toDecisions(
       title: issue.title,
       href: issueHref(issue),
       releaseCondition: issue.unblockAction?.trim() || "Review decision required",
-      security: issue.labelNames.some((label) => /security/i.test(label)),
+      security: isSecurityIssue(issue, agentsById, issuesById),
       owner: memberName(issue.assigneeUserId, membersById) ?? marcLabel,
       marc: true,
     }));

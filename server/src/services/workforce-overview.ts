@@ -9,6 +9,7 @@ import {
   companyMemberships,
   environments,
   heartbeatRuns,
+  issueRecoveryActions,
   issueLabels,
   issueRelations,
   issueWorkProducts,
@@ -58,6 +59,7 @@ export function workforceOverviewService(db: Db) {
         environmentRows,
         projectRows,
         issueRows,
+        recoveryRows,
         relationRows,
         labelRows,
         approvalRows,
@@ -121,6 +123,13 @@ export function workforceOverviewService(db: Db) {
           .where(and(eq(issues.companyId, companyId), executionIssueCondition(), ne(issues.status, "cancelled")))
           .orderBy(sql`case when ${issues.status} = 'done' then 1 else 0 end`, desc(issues.updatedAt))
           .limit(WORKFORCE_OVERVIEW_LIMITS.issues),
+        db
+          .select({ issueId: issueRecoveryActions.sourceIssueId })
+          .from(issueRecoveryActions)
+          .where(and(
+            eq(issueRecoveryActions.companyId, companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          )),
         db
           .select({
             blockerIssueId: issueRelations.issueId,
@@ -325,6 +334,7 @@ export function workforceOverviewService(db: Db) {
           updatedAt: iso(project.updatedAt) ?? now.toISOString(),
         })),
         issues: issueInputs,
+        recoveryIssueIds: recoveryRows.map((row) => row.issueId),
         blockerEdges: relationRows.filter((edge) => loadedIssueIds.has(edge.blockedIssueId)),
         approvals: approvalRows.map((approval): WorkforceApprovalInput => {
           const title = readApprovalTitle(approval.payload);

@@ -64,6 +64,7 @@ function snapshot(overrides: Partial<WorkforceOverviewSnapshot> = {}): Workforce
     projects: [],
     issues: [],
     blockerEdges: [],
+    recoveryIssueIds: [],
     approvals: [],
     runs: [],
     activity: [],
@@ -360,6 +361,60 @@ describe("projectWorkforceOverview", () => {
     expect(overview.counts.security.label).toBe("Security");
     expect(overview.blockers[0]?.security).toBe(true);
     expect(overview.blockers[0]?.releaseCondition).toBe("Board confirms the rotation window");
+  });
+
+  it("identifies security work through the reporting chain and explicit AI-SEC titles", () => {
+    const lead = { ...idleAgent("lead"), name: "Security", role: "general" };
+    const analyst = { ...idleAgent("analyst"), name: "Exposure Analyst", role: "general", reportsTo: "lead" };
+    const overview = projectWorkforceOverview(snapshot({
+      agents: [lead, analyst],
+      issues: [
+        issue({ id: "domain", status: "blocked", assigneeAgentId: "analyst" }),
+        issue({ id: "titled", title: "AI-SEC: daily status", status: "blocked" }),
+        issue({ id: "excluded", title: "security-proof excluded", status: "blocked" }),
+        issue({ id: "unrelated", status: "blocked" }),
+      ],
+    }));
+
+    expect(overview.counts.security.value).toBe(2);
+    expect(overview.blockers.map((blocker) => [blocker.id, blocker.security])).toEqual([
+      ["domain", true],
+      ["titled", true],
+      ["excluded", false],
+      ["unrelated", false],
+    ]);
+  });
+
+  it("classifies reviews under a loaded AI-SEC parent without labeling unrelated children", () => {
+    const overview = projectWorkforceOverview(snapshot({
+      agents: [idleAgent("watchtower")],
+      members: [{ userId: "marc", name: "Marc" }],
+      issues: [
+        issue({ id: "security-parent", title: "AI-SEC: security team", status: "done" }),
+        issue({ id: "watchtower-blocker", title: "Independent review", status: "blocked", parentId: "security-parent", assigneeAgentId: "watchtower" }),
+        issue({ id: "watchtower-review", title: "Independent decision", status: "in_review", parentId: "security-parent", assigneeUserId: "marc" }),
+        issue({ id: "ordinary-parent", title: "Delivery", status: "done" }),
+        issue({ id: "ordinary-child", title: "Independent review", status: "blocked", parentId: "ordinary-parent", assigneeAgentId: "watchtower" }),
+      ],
+    }));
+
+    expect(overview.counts.security.value).toBe(2);
+    expect(overview.blockers.find((item) => item.id === "watchtower-blocker")?.security).toBe(true);
+    expect(overview.blockers.find((item) => item.id === "ordinary-child")?.security).toBe(false);
+    expect(overview.decisions.find((item) => item.id === "watchtower-review")?.security).toBe(true);
+  });
+
+  it("excludes a todo under active recovery from waiting eligible", () => {
+    const overview = projectWorkforceOverview(snapshot({
+      agents: [idleAgent("agent")],
+      issues: [
+        issue({ id: "recovering", status: "todo", assigneeAgentId: "agent" }),
+        issue({ id: "ready", status: "todo", assigneeAgentId: "agent" }),
+      ],
+      recoveryIssueIds: ["recovering"],
+    }));
+
+    expect(overview.counts.waitingEligible.value).toBe(1);
   });
 
   it("attributes board approvals to Marc only when a member named Marc exists", () => {

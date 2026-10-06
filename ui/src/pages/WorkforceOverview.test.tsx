@@ -68,6 +68,7 @@ function vulcanOverview() {
       },
     ],
     blockerEdges: [],
+    recoveryIssueIds: [],
     approvals: [],
     runs: [
       {
@@ -172,6 +173,7 @@ describe("WorkforceOverviewBody", () => {
       agents: [],
       projects: [],
       blockerEdges: [],
+      recoveryIssueIds: [],
       approvals: [],
       runs: [],
       activity: [],

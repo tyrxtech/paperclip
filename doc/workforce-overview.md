@@ -9,7 +9,7 @@ The page is read-only. Loading it, polling it, and pressing Refresh call:
 
 An optional `initiative` query (issue id or identifier such as `TYR-721`) selects the handoff timeline. With no query, the server and the page use the same parent: the most recently updated issue that has child tasks, including a completed parent. The initiative control value is that issue's public identifier. None of those requests check out a task, resume an agent, reassign work, or start a run.
 
-Work counts use the same execution-issue filter as the dashboard. Hidden issues, harness issues, and persistent conversation containers are omitted. A dependent task is waiting eligible only when every blocker is done. A cancelled blocker, or a blocker missing from the snapshot, stays unresolved.
+Work counts use the same execution-issue filter as the dashboard. Hidden issues, harness issues, and persistent conversation containers are omitted. A dependent task is waiting eligible only when every blocker is done and no active or escalated recovery action holds it. A cancelled blocker, or a blocker missing from the snapshot, stays unresolved. Waiting eligible describes structural eligibility; it does not promise that the agent has a free model slot.
 
 Switching company starts a new read. The page does not keep the previous company's snapshot while that read is in flight. A failed refresh for the same company still keeps the last successful snapshot for that company.
 
@@ -21,6 +21,8 @@ Switching company starts a new read. The page does not keep the previous company
 - Handoff timeline for the selected initiative, built only from `activity_log` rows on that issue tree. A row with no run id and no agent or user actor is labeled **Unknown provenance**.
 - Deliverables. Same-origin paths, including `/api/...` attachment content paths, are authenticated links. External `https` URLs are labeled external. A deliverable with no stored path says **No authenticated link recorded**.
 - Blockers and decisions, each with a release condition when one is stored. Security items keep a **Security** label.
+
+Security classification uses an explicit security or AI-SEC issue label, an AI-SEC title, or an assignee whose reporting chain includes a Security lead or security role. A child task inherits the classification from loaded parent tasks. It applies to blocked tasks and open decisions in the Security count.
 
 Paused agents are excluded from the executing count. A paused agent with an in-progress task or a still-open run is shown as **Paused**, not as executing. That includes an agent such as Vulcan while it remains paused.
 
