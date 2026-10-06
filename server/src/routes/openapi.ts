@@ -5404,6 +5404,21 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{id}/jev-advisory",
+  tags: ["issues"],
+  summary: "Request a read-only JEV intake advisory for an eligible issue",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/recovery-observability",
   tags: ["dashboard"],
