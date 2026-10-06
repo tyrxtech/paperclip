@@ -1009,6 +1009,66 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 40_000);
 
+  it("promotes another agent's queued Mac1 run when the route holder is cancelled", async () => {
+    const companyId = randomUUID();
+    const [holderAgentId, waitingAgentId] = [randomUUID(), randomUUID()];
+    const [holderIssueId, waitingIssueId] = [randomUUID(), randomUUID()];
+    const [holderRunId, waitingRunId] = [randomUUID(), randomUUID()];
+    const wakeupRequestId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Route cancellation test",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values([holderAgentId, waitingAgentId].map((id) => ({
+      id,
+      companyId,
+      name: `Mac route ${id.slice(0, 6)}`,
+      role: "engineer" as const,
+      status: "active" as const,
+      adapterType: "codex_local" as const,
+      adapterConfig: { model: "tyrx-litellm/mac1-qwen38" },
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    })));
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: waitingAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: waitingIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values([
+      { id: holderRunId, companyId, agentId: holderAgentId, invocationSource: "assignment", triggerDetail: "system", status: "running", contextSnapshot: { issueId: holderIssueId }, runnerProfileJson: { modelRouteAdmission: { key: "mac1-qwen38", limit: 1 } } },
+      { id: waitingRunId, companyId, agentId: waitingAgentId, invocationSource: "assignment", triggerDetail: "system", status: "queued", wakeupRequestId, contextSnapshot: { issueId: waitingIssueId, wakeReason: "issue_assigned" } },
+    ]);
+    await db.update(agentWakeupRequests).set({ runId: waitingRunId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.insert(issues).values([
+      { id: holderIssueId, companyId, title: "Holder", status: "in_progress", priority: "high", assigneeAgentId: holderAgentId, responsibleUserId: "responsible-user", executionRunId: holderRunId, executionLockedAt: new Date() },
+      { id: waitingIssueId, companyId, title: "Waiting", status: "todo", priority: "high", assigneeAgentId: waitingAgentId, responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: waitingIssueId,
+      authorAgentId: waitingAgentId,
+      authorType: "agent",
+      createdByRunId: waitingRunId,
+      body: "Waiting route run completed.",
+    });
+
+    await heartbeat.cancelRun(holderRunId, "Route holder cancelled by operator");
+    expect(await waitForCondition(async () =>
+      (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, waitingRunId)))[0]?.status === "succeeded",
+      10_000,
+    )).toBe(true);
+  }, 40_000);
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

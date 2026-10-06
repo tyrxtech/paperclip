@@ -9773,6 +9773,7 @@ export function heartbeatService(
             wakeupRequestId: effect.run.wakeupRequestId,
           },
         });
+        await startNextQueuedRunForModelRoute(effect.run);
         await startNextQueuedRunForAgent(effect.run.agentId);
       } else {
         await logActivity(db, {
@@ -19432,6 +19433,7 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
+      await startNextQueuedRunForModelRoute(finalizedRun);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -20053,7 +20055,8 @@ export function heartbeatService(
   }
 
   async function startNextQueuedRunForModelRoute(
-    completedRun: typeof heartbeatRuns.$inferSelect,
+    completedRun: Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "companyId"> &
+      Partial<Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson">>,
   ) {
     const routeKey =
       readNonEmptyString(
@@ -29381,6 +29384,7 @@ export function heartbeatService(
         await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
+        await startNextQueuedRunForModelRoute(cancelled);
         await startNextQueuedRunForAgent(run.agentId);
       }
       return cancelled;
