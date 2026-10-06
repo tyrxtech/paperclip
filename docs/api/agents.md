@@ -154,3 +154,14 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+## Live Runs and Model Route Admission
+
+```
+GET /api/companies/{companyId}/live-runs
+```
+
+Queued and running rows for agents using `tyrx-litellm/mac1-qwen38` include
+`modelRouteKey: "mac1-qwen38"` and `modelRouteAdmissionLimit: 1`. A queued row
+with that key is waiting for the shared Mac1 provider slot. These fields are
+`null` for routes without a configured admission limit.
