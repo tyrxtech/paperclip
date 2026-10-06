@@ -3,6 +3,8 @@ import { retryNativeWorkspaceExport } from "../services/native-runtime/native-wo
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { createJevDecisionAdapter } from "../services/jev-decision-adapter.js";
+import { isJevIntakeEligible } from "../services/jev-intake-eligibility.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
@@ -8855,6 +8857,85 @@ export function issueRoutes(
     );
 
     res.json(response);
+  });
+
+  router.post("/companies/:companyId/issues/:id/jev-advisory", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, req.params.id as string),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (issue.companyId !== companyId) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    if (req.actor.type !== "board") {
+      const agentId = req.actor.type === "agent" ? req.actor.agentId : null;
+      const [agent] = agentId
+        ? await db.select({ name: agents.name }).from(agents).where(and(
+            eq(agents.id, agentId),
+            eq(agents.companyId, companyId),
+          )).limit(1)
+        : [];
+      if (agent?.name !== "Dispatch") {
+        res.status(403).json({ error: "JEV intake advisory is limited to the board and Dispatch" });
+        return;
+      }
+    }
+
+    const relations = await svc.getRelationSummaries(issue.id);
+    if (!isJevIntakeEligible(issue, relations.blockedBy)) {
+      res.status(409).json({ error: "Issue is assigned, active, blocked, or has an unresolved dependency" });
+      return;
+    }
+
+    const [prior] = await db.select({ details: activityLog.details, createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issue.id),
+        eq(activityLog.action, "issue.jev_lane_advisory"),
+      ))
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1);
+    const priorReceipt = (prior?.details as { receipt?: { errorCategory?: string | null } } | null)?.receipt;
+    if (priorReceipt && !priorReceipt.errorCategory && prior.createdAt >= issue.updatedAt) {
+      res.json({ available: true, receipt: priorReceipt, reused: true });
+      return;
+    }
+
+    const receipt = await createJevDecisionAdapter().suggestIssueLane({
+      runId: randomUUID(),
+      issueIdentifier: issue.identifier ?? "",
+      issueTitle: issue.title,
+      issueStatus: issue.status,
+      unresolvedDependencyCount: 0,
+      duplicateRun: false,
+    });
+    if (!receipt) {
+      res.json({ available: false });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.jev_lane_advisory",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { receipt },
+    });
+    res.json({ available: true, receipt, reused: false });
   });
 
   router.get("/issues/:id", async (req, res) => {
