@@ -277,8 +277,8 @@ describe("WorkforceOverviewBody", () => {
 
 describe("workforce overview client", () => {
   it("only fetches the overview with GET", () => {
-    const api = readFileSync(path.resolve(process.cwd(), "src/api/workforceOverview.ts"), "utf8");
-    const page = readFileSync(path.resolve(process.cwd(), "src/pages/WorkforceOverview.tsx"), "utf8");
+    const api = readFileSync(path.resolve(process.cwd(), "ui/src/api/workforceOverview.ts"), "utf8");
+    const page = readFileSync(path.resolve(process.cwd(), "ui/src/pages/WorkforceOverview.tsx"), "utf8");
     expect(api).toMatch(/api\.get/);
     expect(api).not.toMatch(/api\.(post|patch|put|delete)/);
     expect(page).not.toMatch(/agentsApi|issuesApi\.(checkout|update)|heartbeatsApi\.(wakeup|invoke)/);
