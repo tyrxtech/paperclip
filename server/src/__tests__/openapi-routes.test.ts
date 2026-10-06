@@ -38,6 +38,7 @@ const apiPrefixes: Record<string, string> = {
   "connection-intents.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
+  "workforce-overview.ts": "/api",
   "decision-queues.ts": "/api",
   "decisions.ts": "/api",
   "decision-training.ts": "/api",
