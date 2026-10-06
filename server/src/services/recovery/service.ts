@@ -4470,6 +4470,20 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      // A backdated in-progress record without a linked run may have been
+      // imported with live work elsewhere. Do not invent a continuation for it.
+      // A newly started assignment or answered interaction can still recover.
+      if (
+        issue.status === "in_progress" &&
+        !latestRun &&
+        !issue.checkoutRunId &&
+        !issue.executionRunId &&
+        issue.startedAt &&
+        issue.startedAt < issue.createdAt
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       // A native chat can finish between the earlier settlement read and this
       // fresh run read, before its response is materialized. Its trusted
       // finalizer owns that settlement; generic productive-work recovery must
@@ -4587,6 +4601,12 @@ export function recoveryService(
         issue.companyId,
         issue.id,
       );
+      if (activeRecoveryAction?.kind === "deliberate_wait_without_target") {
+        // The bounded disposition repair owns the next attempt. A generic
+        // continuation here creates a competing path and resolves the repair.
+        result.skipped += 1;
+        continue;
+      }
       if (activeRecoveryAction?.ownerType === "board") {
         result.skipped += 1;
         continue;
