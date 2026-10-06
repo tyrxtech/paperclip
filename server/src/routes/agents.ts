@@ -6710,6 +6710,18 @@ export function agentRoutes(
       agentName: agentsTable.name,
         agentAppearance: agentsTable.appearance,
       adapterType: agentsTable.adapterType,
+      // Operator visibility for route-level admission: queued rows with this
+      // field are waiting for the single shared provider slot.
+      modelRouteKey: sql<string | null>`case
+        when lower(coalesce(${agentsTable.adapterConfig}->>'modelRouteKey', ${agentsTable.adapterConfig}->>'modelRoute', ${agentsTable.adapterConfig}->>'route', ${agentsTable.adapterConfig}->>'model')) = 'mac1-qwen38'
+        then 'mac1-qwen38'
+        else null
+      end`.as("modelRouteKey"),
+      modelRouteAdmissionLimit: sql<number | null>`case
+        when lower(coalesce(${agentsTable.adapterConfig}->>'modelRouteKey', ${agentsTable.adapterConfig}->>'modelRoute', ${agentsTable.adapterConfig}->>'route', ${agentsTable.adapterConfig}->>'model')) = 'mac1-qwen38'
+        then 1
+        else null
+      end`.as("modelRouteAdmissionLimit"),
       logBytes: heartbeatRuns.logBytes,
       livenessState: heartbeatRuns.livenessState,
       livenessReason: heartbeatRuns.livenessReason,

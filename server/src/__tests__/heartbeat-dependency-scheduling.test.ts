@@ -882,6 +882,133 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 40_000);
 
+  it("admits only one mac1-qwen38 run across agents, then promotes FIFO without blocking another route", async () => {
+    const companyId = randomUUID();
+    const [firstAgentId, secondAgentId, otherRouteAgentId] = [
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    ];
+    const [firstIssueId, secondIssueId, otherRouteIssueId] = [
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    ];
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    mockAdapterExecute.mockImplementation(async (input: any) => {
+      if (input.agent.id === firstAgentId) await firstReleased;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: `Completed ${input.agent.id}`,
+        provider: "test",
+        model: input.agent.adapterConfig.model,
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Route admission test",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "Mac route A",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "mac1-qwen38" },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Mac route B",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "mac1-qwen38" },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: otherRouteAgentId,
+        companyId,
+        name: "Independent route",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "other-model" },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      { id: firstIssueId, companyId, title: "First route run", status: "todo", priority: "high", assigneeAgentId: firstAgentId, responsibleUserId: "responsible-user" },
+      { id: secondIssueId, companyId, title: "Second route run", status: "todo", priority: "high", assigneeAgentId: secondAgentId, responsibleUserId: "responsible-user" },
+      { id: otherRouteIssueId, companyId, title: "Other route run", status: "todo", priority: "high", assigneeAgentId: otherRouteAgentId, responsibleUserId: "responsible-user" },
+    ]);
+
+    const wake = async (agentId: string, issueId: string) => {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+      expect(run).not.toBeNull();
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: run!.id,
+        body: `Completed ${agentId}`,
+      });
+      return run!;
+    };
+
+    try {
+      const first = await wake(firstAgentId, firstIssueId);
+      expect(await waitForCondition(async () =>
+        (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, first.id)))[0]?.status === "running",
+      )).toBe(true);
+
+      const second = await wake(secondAgentId, secondIssueId);
+      const other = await wake(otherRouteAgentId, otherRouteIssueId);
+      expect((await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, second.id)))[0]?.status).toBe("queued");
+      expect(await waitForCondition(async () =>
+        (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, other.id)))[0]?.status === "succeeded",
+      )).toBe(true);
+
+      releaseFirst();
+      expect(await waitForCondition(async () =>
+        (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, second.id)))[0]?.status === "succeeded",
+        10_000,
+      )).toBe(true);
+      const [firstRow, secondRow] = await Promise.all([
+        db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, first.id)).then((rows) => rows[0]),
+        db.select({ startedAt: heartbeatRuns.startedAt, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, second.id)).then((rows) => rows[0]),
+      ]);
+      expect(secondRow.startedAt!.getTime()).toBeGreaterThanOrEqual(firstRow.finishedAt!.getTime());
+      expect(secondRow.contextSnapshot).toMatchObject({ issueId: secondIssueId, wakeReason: "issue_assigned" });
+    } finally {
+      releaseFirst();
+    }
+  }, 40_000);
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

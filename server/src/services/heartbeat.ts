@@ -6802,6 +6802,24 @@ function readConfiguredModelFromAdapterConfig(
   return readNonEmptyString(adapterConfig?.model);
 }
 
+const MODEL_ROUTE_ADMISSION_LIMITS = new Map<string, number>([
+  ["mac1-qwen38", 1],
+]);
+
+function modelRouteAdmissionKey(
+  adapterConfig: Record<string, unknown> | null | undefined,
+) {
+  const config = parseObject(adapterConfig);
+  const candidate =
+    readNonEmptyString(config.modelRouteKey) ??
+    readNonEmptyString(config.modelRoute) ??
+    readNonEmptyString(config.route) ??
+    readNonEmptyString(config.model);
+  if (!candidate) return null;
+  const normalized = candidate.trim().toLowerCase();
+  return MODEL_ROUTE_ADMISSION_LIMITS.has(normalized) ? normalized : null;
+}
+
 function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
@@ -16934,6 +16952,40 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  async function acquireModelRouteAdmission(
+    tx: Db,
+    agent: Pick<typeof agents.$inferSelect, "companyId" | "adapterConfig">,
+    runId: string,
+  ) {
+    const routeKey = modelRouteAdmissionKey(agent.adapterConfig);
+    if (!routeKey) return { admitted: true as const, routeKey: null };
+
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${agent.companyId}:${routeKey}`}, 0))`,
+    );
+    const [{ count }] = await tx
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.status, "running"),
+          ne(heartbeatRuns.id, runId),
+          or(
+            sql`${heartbeatRuns.runnerProfileJson} #>> '{modelRouteAdmission,key}' = ${routeKey}`,
+            sql`lower(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model')) = ${routeKey}`,
+          ),
+        ),
+      );
+    return {
+      admitted:
+        Number(count ?? 0) <
+        (MODEL_ROUTE_ADMISSION_LIMITS.get(routeKey) ?? 1),
+      routeKey,
+    };
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -17472,6 +17524,25 @@ export function heartbeatService(
                 return { kind: "stale" as const, run: null };
               }
 
+              const routeAdmission = await acquireModelRouteAdmission(
+                tx as unknown as Db,
+                agent,
+                lockedRun.id,
+              );
+              if (!routeAdmission.admitted)
+                return { kind: "stale" as const, run: null };
+              const dispatchProfile = {
+                adapterDispatch: { adapterType: agent.adapterType },
+                ...(routeAdmission.routeKey
+                  ? {
+                      modelRouteAdmission: {
+                        key: routeAdmission.routeKey,
+                        limit: 1,
+                      },
+                    }
+                  : {}),
+              };
+
               if (lockedRun.invocationSource === "automation") {
                 const admission = readChatControlRecoveryAdmission(lockedRun);
                 if (admission === "invalid")
@@ -17572,7 +17643,7 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify(dispatchProfile)}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17671,7 +17742,7 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify(dispatchProfile)}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17736,21 +17807,29 @@ export function heartbeatService(
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
-          const claimValues = {
-            status: "running",
-            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
-            ...legacyControllerClaim(run.runtimeMode),
-            responsibleUserId,
-            startedAt: run.startedAt ?? claimedAt,
-            updatedAt: claimedAt,
-          };
-          if (nativeReviewContext) {
-            return claimQueuedNativeReviewRun(tx, {
-              run, claimedAt, claimValues,
-              agentNameKey: normalizeAgentNameKey(agent.name),
-            });
-          }
           return tx.transaction(async (claimTx) => {
+            const routeAdmission = await acquireModelRouteAdmission(
+              claimTx as unknown as Db,
+              agent,
+              run.id,
+            );
+            if (!routeAdmission.admitted) return null;
+            const claimValues = {
+              status: "running",
+              runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType }, ...(routeAdmission.routeKey ? { modelRouteAdmission: { key: routeAdmission.routeKey, limit: 1 } } : {}) })}::jsonb`,
+              ...legacyControllerClaim(run.runtimeMode),
+              responsibleUserId,
+              startedAt: run.startedAt ?? claimedAt,
+              updatedAt: claimedAt,
+            };
+            if (nativeReviewContext) {
+              return claimQueuedNativeReviewRun(claimTx as unknown as Db, {
+                run,
+                claimedAt,
+                claimValues,
+                agentNameKey: normalizeAgentNameKey(agent.name),
+              });
+            }
             const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
             if (issueClaim.blocked) return null;
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
@@ -19824,7 +19903,10 @@ export function heartbeatService(
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgent(
+    agentId: string,
+    preferredRunId?: string,
+  ) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -19893,6 +19975,10 @@ export function heartbeatService(
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+        if (preferredRunId) {
+          if (left.id === preferredRunId) return -1;
+          if (right.id === preferredRunId) return 1;
+        }
         const leftIssueId = readNonEmptyString(
           parseObject(left.contextSnapshot).issueId,
         );
@@ -19963,6 +20049,35 @@ export function heartbeatService(
       }
       return claimedRuns;
     });
+  }
+
+  async function startNextQueuedRunForModelRoute(
+    completedRun: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const routeKey =
+      readNonEmptyString(
+        parseObject(parseObject(completedRun.runnerProfileJson).modelRouteAdmission)
+          .key,
+      ) ??
+      modelRouteAdmissionKey((await getAgent(completedRun.agentId))?.adapterConfig);
+    if (!routeKey) return [];
+
+    const next = await db
+      .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, completedRun.companyId),
+          eq(heartbeatRuns.status, "queued"),
+          sql`lower(coalesce(${agents.adapterConfig}->>'modelRouteKey', ${agents.adapterConfig}->>'modelRoute', ${agents.adapterConfig}->>'route', ${agents.adapterConfig}->>'model')) = ${routeKey}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!next) return [];
+    return startNextQueuedRunForAgent(next.agentId, next.id);
   }
 
   // Await every background heartbeat execution that is currently in flight. A
@@ -26320,6 +26435,9 @@ export function heartbeatService(
             .catch(err => {
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
+        }
+        if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          await startNextQueuedRunForModelRoute(latestRun);
         }
         await startNextQueuedRunForAgent(run.agentId);
       }
