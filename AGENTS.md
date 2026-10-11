@@ -224,6 +224,13 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
+## Cursor Cloud specific instructions
+
+- `node` on PATH must be Node.js 24.11 or newer. The image Node at `/exec-daemon/node` is 22 and is ahead of `~/.nvm` on PATH, so a Node 24 binary has to appear earlier (the environment snapshot links Node 24.21 and pnpm 9.15.4 from `/usr/local/cargo/bin`).
+- Install with `pnpm install`. `pnpm install --frozen-lockfile` currently fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` because `patches/acpx@0.13.1.patch` does not match `pnpm-lock.yaml` (it also drops a stale `cpu` field on `opencode-ai`). A normal install rewrites those lockfile entries. Do not commit `pnpm-lock.yaml`; GitHub Actions owns it.
+- `pnpm dev` serves the API and UI on `http://127.0.0.1:3100`. Leave `DATABASE_URL` unset so dev uses embedded Postgres. The first `pnpm dev` compiles the Rust runner under `packages/paperclip-runner` before the server listens. `pnpm dev:stop` stops it.
+- Local board auth works without secrets. `GET /api/health` is the readiness check. Create a company with `POST /api/companies` and an issue with `POST /api/companies/:companyId/issues`.
+
 ## Design system
 
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
